@@ -12,9 +12,19 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
-
+    
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate repository setup
-        run: echo "Repository CI is working."
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Check application
+        run: |
+          python -m py_compile app.py
