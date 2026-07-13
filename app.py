@@ -3,8 +3,8 @@ import sqlite3
 import os
 
 app = Flask(__name__)
-DB_PATH = os.environ.get("TASK_DB_PATH", os.path.join(app.instance_path, "tasks.db"))
-os.makedirs(app.instance_path, exist_ok=True)
+DB_PATH = os.path.join(os.path.dirname(__file__), "tasks.db")
+
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -75,7 +75,8 @@ def delete_task(task_id):
     return redirect(url_for("index"))
 
 
-app.before_serving(init_db)
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=os.environ.get("FLASK_DEBUG") == "1")
+    init_db()
+    app.run(debug=True, port=5000)
+else:
+    init_db()
