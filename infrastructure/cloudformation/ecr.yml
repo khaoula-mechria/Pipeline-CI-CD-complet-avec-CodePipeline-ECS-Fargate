@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Registre Amazon ECR privé pour le projet (CI/CD AWS).
+  - Stocke les images Docker construites par CodeBuild.
+  - Scan on push activé (détection de vulnérabilités à chaque poussée).
+  - Lifecycle Policy : ne conserve que les 10 dernières images (optimisation des coûts).
+
+# ------------------------------------------------------------------
+# PARAMÈTRES
+# Permettent de réutiliser le même template pour dev / staging / prod
+# sans dupliquer le code (bonne pratique IaC).
+# ------------------------------------------------------------------
+Parameters:
+  ProjectName:
+    Type: String
+    Default: taskmanager
+    Description: >
+      Nom du projet, utilisé comme préfixe de nommage des ressources.
+      Doit être en minuscules (contrainte ECR).
+    AllowedPattern: '^[a-z][a-z0-9-]*$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environnement cible. Impacte le nom du repository.
+
+  MaxImageCount:
+    Type: Number
+    Default: 10
+    Description: >
+      Nombre maximum d'images conservées par la Lifecycle Policy.
+      Au-delà, les images les plus anciennes sont automatiquement supprimées.
+
+# ------------------------------------------------------------------
+# RESSOURCES
+# ------------------------------------------------------------------
+Resources:
+
+  # Le repository ECR lui-même.
+  AppRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}-${Environment}'
+
+      # IMMUTABLE = un tag une fois poussé ne peut plus être écrasé.
+      # Bonne pratique CI/CD : évite qu'un tag "latest" ou un SHA soit
+      # remplacé silencieusement par une autre image plus tard.
+      ImageTagMutability: IMMUTABLE
+
+      # Critère d'acceptation : scan on push activé.
+      # ECR lance automatiquement un scan de vulnérabilités (Basic Scanning,
+      # basé sur la base CVE) à chaque "docker push".
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+      # Chiffrement au repos des images. AES256 = clé gérée par AWS (gratuit).
+      # KMS serait l'alternative si tu veux gérer ta propre clé (coût + rotation).
+      EncryptionConfiguration:
+        EncryptionType: AES256
+
+      # Critère d'acceptation : Lifecycle Policy, garder seulement les
+      # N dernières images. Ici on cible TOUTES les images ("tagStatus: any"),
+      # quel que soit leur tag, pour rester simple pour le MVP.
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Garder uniquement les ${MaxImageCount} dernières images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": ${MaxImageCount}
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+      # Politique d'accès au niveau du repository (resource-based policy).
+      # Ici : autorise uniquement les principals du compte AWS courant
+      # à push/pull. Le futur rôle IAM de CodeBuild devra avoir en plus
+      # une IAM policy identity-based avec les mêmes actions (les deux
+      # sont nécessaires : la resource policy ET la identity policy).
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccountPushPull
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:BatchCheckLayerAvailability
+              - ecr:PutImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+# ------------------------------------------------------------------
+# OUTPUTS
+# Exportés pour être réutilisés par d'autres stacks (ex: la stack
+# CodeBuild aura besoin de RepositoryUri dans son buildspec, et la
+# stack IAM aura besoin de RepositoryArn pour restreindre les policies).
+# ------------------------------------------------------------------
+Outputs:
+  RepositoryUri:
+    Description: URI complet du repository (à utiliser pour "docker push")
+    Value: !GetAtt AppRepository.RepositoryUri
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecr-uri'
+
+  RepositoryArn:
+    Description: ARN du repository (pour restreindre les IAM policies de CodeBuild/CodeDeploy)
+    Value: !GetAtt AppRepository.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecr-arn'
+
+  RepositoryName:
+    Description: Nom du repository ECR
+    Value: !Ref AppRepository
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecr-name'
