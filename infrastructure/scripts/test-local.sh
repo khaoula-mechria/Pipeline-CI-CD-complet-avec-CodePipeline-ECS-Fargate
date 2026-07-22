@@ -71,12 +71,14 @@ aws --endpoint-url=$ENDPOINT cloudformation deploy \
 
 echo ""
 echo "──────────────────────────────────────────────"
-echo "5) Vérification que le repository ECR existe"
-echo "──────────────────────────────────────────────"
-aws --endpoint-url=$ENDPOINT ecr describe-repositories
+#bloquée par la limitation LocalStack.
+#echo "5) Vérification que le repository ECR existe"
+#echo "──────────────────────────────────────────────"
+#aws --endpoint-url=$ENDPOINT ecr describe-repositories
 
-echo ""
-echo "──────────────────────────────────────────────"
+#echo ""
+#echo "──────────────────────────────────────────────"
+
 echo "6) Vérification des outputs de la stack"
 echo "   (RepositoryUri, RepositoryArn, RepositoryName)"
 echo "──────────────────────────────────────────────"

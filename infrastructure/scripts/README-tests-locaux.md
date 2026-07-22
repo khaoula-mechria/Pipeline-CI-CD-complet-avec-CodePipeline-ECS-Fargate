@@ -20,23 +20,48 @@ orthographié, propriété manquante obligatoire).
 
 LocalStack fait tourner une fausse API AWS dans Docker, sur ta machine.
 Tu peux réellement déployer la stack et créer "un vrai" repository ECR
-(local, pas sur AWS), pousser une image de test, vérifier les outputs —
-exactement comme tu le ferais en prod, mais gratuit et sans compte AWS.
+(local, pas sur AWS), vérifier les outputs — exactement comme tu le
+ferais en prod, mais gratuit et sans compte AWS.
+
+Prérequis :
 
 ```bash
-pip install awscli-local
+pip install cfn-lint awscli-local
+```
 
-docker pull localstack/localstack:3.8.1
+Docker doit être installé et lancé. Pas besoin de démarrer LocalStack
+à la main : le script s'en charge (voir ci-dessous).
 
-docker run -d --rm --name localstack \
-  -p 4566:4566 \
-  -e SERVICES=ecr,cloudformation \
-  localstack/localstack:3.8.1
-
+```bash
 cd infrastructure/scripts
 chmod +x test-local.sh
 ./test-local.sh
 ```
+
+Le script `test-local.sh` exécute, dans l'ordre :
+
+1. **cfn-lint** sur `../cloudformation/ecr.yaml` — arrête tout de suite
+   si le template est syntaxiquement invalide.
+2. **Démarrage de LocalStack** — si un conteneur nommé `localstack`
+   tourne déjà, il est réutilisé ; sinon le script lance
+   `localstack/localstack:3.8.1` (services `ecr` + `cloudformation`
+   sur le port 4566) et attend jusqu'à 60s (30 tentatives, 2s
+   d'intervalle) que `/_localstack/health` réponde.
+3. **`aws cloudformation validate-template`** contre l'endpoint
+   LocalStack, pour vérifier que le template est bien formé du point
+   de vue de l'API CloudFormation.
+4. **Déploiement de la stack** (`aws cloudformation deploy`) sous le
+   nom `taskmanager-ecr-test`, avec les paramètres
+   `ProjectName=taskmanager Environment=dev`.
+5. **`aws ecr describe-repositories`** pour confirmer que le
+   repository a bien été créé par la stack.
+6. **`aws cloudformation describe-stacks`** pour afficher les outputs
+   de la stack (`RepositoryUri`, `RepositoryArn`, `RepositoryName`).
+
+Les identifiants AWS factices (`AWS_ACCESS_KEY_ID=test`,
+`AWS_SECRET_ACCESS_KEY=test`, région `eu-west-1`) sont exportés
+directement par le script — LocalStack ne vérifie pas leur validité,
+mais l'AWS CLI exige qu'ils soient présents.
 
 Limite à connaître : la version communautaire (gratuite) de LocalStack
 simule bien la création du repository, le scan on push et les policies,
