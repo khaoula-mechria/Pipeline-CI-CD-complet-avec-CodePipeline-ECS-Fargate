@@ -1,0 +1,94 @@
+version: 0.2
+
+# ==============================================================================
+# buildspec.yml — Pipeline de build pour l'application Node.js (task manager)
+#
+# Ordre des phases (cohérent avec l'architecture documentée du pipeline) :
+#   install    -> dépendances npm + outil SAST
+#   pre_build  -> analyse de sécurité statique (SAST) + login ECR
+#   build      -> construction de l'image Docker multi-stage
+#   post_build -> tests unitaires + seuil de couverture, puis push ECR
+#
+# Variables ECR_REPOSITORY_URI / AWS_DEFAULT_REGION / AWS_ACCOUNT_ID sont
+# injectées automatiquement par le projet CodeBuild (voir codebuild.yaml).
+# ==============================================================================
+
+env:
+  variables:
+    NODE_ENV: "test"
+    COVERAGE_THRESHOLD: "80"
+
+phases:
+
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - echo "=== INSTALL === $(date)"
+      - echo "Installation des dépendances de l'application (lockfile figé)"
+      - npm ci
+      - echo "Installation de Semgrep (outil SAST choisi : CLI-natif, pas de serveur)"
+      - pip3 install semgrep --break-system-packages 2>/dev/null || pip3 install semgrep
+
+  pre_build:
+    commands:
+      - echo "=== PRE-BUILD === Analyse SAST du code source"
+      # --error fait sortir semgrep avec un code != 0 si des findings sont trouvés
+      # avec la sévérité ERROR (équivalent "critique" pour notre quality gate).
+      - semgrep --config auto --error --json --output semgrep-report.json . || SAST_STATUS=$?
+      - |
+        if [ "${SAST_STATUS:-0}" -ne 0 ]; then
+          echo "❌ Vulnérabilités critiques détectées par Semgrep -> arrêt du build"
+          cat semgrep-report.json
+          exit 1
+        fi
+      - echo "✅ SAST OK, aucune vulnérabilité critique"
+      - echo "Connexion à Amazon ECR"
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$ECR_REPOSITORY_URI"
+      # Tag = 8 premiers caractères du SHA du commit (traçabilité build <-> commit)
+      - export IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-8)
+      - echo "Tag de l'image pour ce build -> $IMAGE_TAG"
+
+  build:
+    commands:
+      - echo "=== BUILD === Construction de l'image Docker (multi-stage)"
+      - docker build -t "$ECR_REPOSITORY_URI:$IMAGE_TAG" -t "$ECR_REPOSITORY_URI:latest" .
+      - echo "Taille de l'image générée :"
+      - docker images "$ECR_REPOSITORY_URI:$IMAGE_TAG"
+
+  post_build:
+    commands:
+      - echo "=== POST-BUILD === Exécution des tests unitaires"
+      # --coverage génère coverage/coverage-summary.json (nécessite jest configuré,
+      # voir jest.config.js d'exemple fourni séparément)
+      - npm test -- --coverage --coverageReporters=json-summary --coverageReporters=text
+      - echo "Vérification du seuil de couverture (${COVERAGE_THRESHOLD}%)"
+      - |
+        COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
+        echo "Couverture mesurée : ${COVERAGE}%"
+        if (( $(echo "$COVERAGE < $COVERAGE_THRESHOLD" | bc -l) )); then
+          echo "❌ Couverture insuffisante (< ${COVERAGE_THRESHOLD}%) -> échec du pipeline"
+          exit 1
+        fi
+      - echo "✅ Tests et couverture OK -> push de l'image vers ECR"
+      - docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"
+      - docker push "$ECR_REPOSITORY_URI:latest"
+      - echo "✅ Image poussée avec succès -> $ECR_REPOSITORY_URI:$IMAGE_TAG"
+      # Fichier utilisé plus tard par la phase de déploiement ECS (CodeDeploy)
+      - printf '[{"name":"app","imageUri":"%s"}]' "$ECR_REPOSITORY_URI:$IMAGE_TAG" > imagedefinitions.json
+
+reports:
+  unit-tests:
+    files:
+      - 'junit.xml'
+    file-format: JUNITXML
+    base-directory: 'reports'
+
+artifacts:
+  files:
+    - imagedefinitions.json
+  discard-paths: yes
+
+cache:
+  paths:
+    - 'node_modules/**/*'

@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Projet AWS CodeBuild pour le projet PFE (CI/CD AWS).
+  - Lié au dépôt GitHub de l'application (source directe, avant mise en place
+    complète de CodePipeline).
+  - Exécute buildspec.yml : install -> SAST -> build Docker -> tests -> push ECR.
+  - Déclenché automatiquement par un webhook GitHub sur push vers main/develop.
+
+# ------------------------------------------------------------------
+# PRÉREQUIS MANUELS (impossibles à faire en CloudFormation) :
+#
+# CodeBuild a besoin d'un token d'authentification GitHub stocké UNE FOIS
+# au niveau du compte AWS avant de pouvoir déployer cette stack. À lancer
+# dès que tu as l'accès AWS, avant "aws cloudformation deploy" :
+#
+#   aws codebuild import-source-credentials \
+#     --server-type GITHUB \
+#     --auth-type PERSONAL_ACCESS_TOKEN \
+#     --token <TON_GITHUB_PERSONAL_ACCESS_TOKEN>
+#
+# (Le token GitHub doit avoir le scope "repo" + "admin:repo_hook" pour
+# permettre à CodeBuild de créer le webhook automatiquement.)
+# ------------------------------------------------------------------
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: taskmanager
+    Description: Doit correspondre au ProjectName utilisé dans ecr.yaml.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Doit correspondre à l'Environment utilisé dans ecr.yaml.
+
+  GitHubRepoUrl:
+    Type: String
+    Description: >
+      URL HTTPS du dépôt GitHub de l'application, ex:
+      https://github.com/ton-user/taskmanager-app.git
+
+  BuildImage:
+    Type: String
+    Default: aws/codebuild/standard:7.0
+    Description: >
+      Image managée AWS incluant Docker + Node.js + Python.
+      standard:7.0 fournit Node 18/20 nativement.
+
+Resources:
+
+  # ------------------------------------------------------------------
+  # RÔLE IAM utilisé PAR CodeBuild pour exécuter le build.
+  # Principe du moindre privilège : uniquement ce qui est nécessaire
+  # pour push l'image vers CE repository ECR précis + écrire ses logs.
+  # ------------------------------------------------------------------
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-codebuild-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub '${ProjectName}-${Environment}-codebuild-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+
+              # Écriture des logs de build dans CloudWatch Logs
+              - Sid: CloudWatchLogsAccess
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}-${Environment}*'
+
+              # ecr:GetAuthorizationToken doit être Resource: "*" (contrainte AWS,
+              # cette action n'accepte pas de restriction par ARN de repository)
+              - Sid: EcrAuth
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+
+              # Push/pull restreint UNIQUEMENT au repository créé dans ecr.yaml
+              # (import de l'ARN exporté par l'autre stack -> pas de duplication,
+              # pas de valeur en dur, cohérence garantie entre les deux stacks)
+              - Sid: EcrPushPull
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource:
+                  - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-ecr-arn'
+
+  # ------------------------------------------------------------------
+  # PROJET CODEBUILD
+  # ------------------------------------------------------------------
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-build'
+      Description: !Sub 'Build, tests et image Docker pour ${ProjectName} (${Environment})'
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+
+      # Source directement liée au dépôt GitHub (critère d'acceptation).
+      Source:
+        Type: GITHUB
+        Location: !Ref GitHubRepoUrl
+        BuildSpec: buildspec.yml
+        GitCloneDepth: 1
+        ReportBuildStatus: true
+
+      # Déclenchement automatique par webhook : push sur main OU develop.
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: PUSH
+            - Type: HEAD_REF
+              Pattern: '^refs/heads/(main|develop)$'
+
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref BuildImage
+        # PrivilegedMode est OBLIGATOIRE : sans lui, "docker build" à
+        # l'intérieur de CodeBuild échoue (pas d'accès au démon Docker).
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ECR_REPOSITORY_URI
+            Value: !ImportValue
+              'Fn::Sub': '${ProjectName}-${Environment}-ecr-uri'
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+
+      # Pas d'artefact S3 : le "livrable" du build est l'image poussée
+      # vers ECR directement dans buildspec.yml (post_build).
+      Artifacts:
+        Type: NO_ARTIFACTS
+
+      # Cache des dépendances npm entre builds -> builds plus rapides.
+      Cache:
+        Type: LOCAL
+        Modes:
+          - LOCAL_DOCKER_LAYER_CACHE
+          - LOCAL_SOURCE_CACHE
+
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub '/aws/codebuild/${ProjectName}-${Environment}'
+
+      TimeoutInMinutes: 15
+
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  ProjectName:
+    Description: Nom du projet CodeBuild (utile pour le déclencher manuellement en attendant CodePipeline)
+    Value: !Ref BuildProject
+
+  ProjectArn:
+    Description: ARN du projet CodeBuild
+    Value: !GetAtt BuildProject.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-codebuild-arn'
+
+  ServiceRoleArn:
+    Description: ARN du rôle IAM utilisé par CodeBuild
+    Value: !GetAtt CodeBuildServiceRole.Arn
