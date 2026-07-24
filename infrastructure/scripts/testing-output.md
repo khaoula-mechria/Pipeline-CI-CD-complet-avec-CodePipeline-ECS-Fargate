@@ -1,6 +1,6 @@
 # Résultats des tests locaux (`infrastructure/scripts/`)
 
-> Snapshot d'exécution réelle des 4 scripts de test, dans l'ordre où ils
+> Snapshot d'exécution réelle des 5 scripts de test, dans l'ordre où ils
 > doivent être lancés. Chaque section indique : ce que le script teste, s'il
 > passe ou non, et — pour tout ce qui ne peut pas être vérifié sans un vrai
 > compte AWS — pourquoi, précisément.
@@ -149,13 +149,76 @@ neutralise ce cas avec un ARN factice dans sa copie temporaire.
   que sur un vrai compte AWS.
 - Le comportement réel de l'action `CodeDeployToECS` (lecture de
   `taskdef.json`/`imageDetail.json`, génération de la task definition,
-  déclenchement du Blue/Green CodeDeploy) — n'existe que côté
-  `pipeline.yml` (pas encore écrit), nécessite un pipeline en exécution
-  réelle.
+  déclenchement du Blue/Green CodeDeploy) — implémenté depuis dans
+  `pipeline.yml` (voir Test 5), nécessite un pipeline en exécution réelle
+  pour être vérifié de bout en bout.
 - Le contenu et l'effet réel des policies managées AWS
   (`AWSCodeDeployRoleForECS`, `AmazonECSTaskExecutionRolePolicy`) —
   LocalStack accepte de les attacher mais n'en vérifie pas la couverture
   fonctionnelle.
+
+---
+
+## `test5-pipeline.sh` — Test 5 : `pipeline.yml`
+
+**Résultat : ✅ PASSE sur les ressources réellement déployables (exit code
+0) ; le reste — la majorité du template — n'est validé que syntaxiquement
+(cfn-lint), limite LocalStack Community bien plus large que pour les 4
+tests précédents.**
+
+| Étape | Résultat |
+|---|---|
+| `cfn-lint pipeline.yml` (template complet, ~17 ressources) | ✅ Valide syntaxiquement |
+| Déploiement dépendances (`ecr.yaml`, `codebuild.yaml`, `iam.yaml`) | ✅ |
+| Copie de `vpc.yml` sans NAT Gateway → exports VPC réels | ✅ `CREATE_COMPLETE`, VpcId/subnet-ids réels obtenus |
+| Copie de `pipeline.yml` réduite aux ressources supportées | ✅ `CREATE_COMPLETE` |
+| Bucket S3 d'artefacts (nom exact + versioning) | ✅ `VersioningConfiguration.Status = Enabled` |
+| Topic SNS + policy (publish `events.amazonaws.com`) | ✅ Policy confirmée, condition `ArnEquals` sur l'ARN de la règle EventBridge |
+| Règle EventBridge (pattern d'état du pipeline) | ✅ Confirmée via `describe-rule` |
+| Log group CloudWatch | ✅ Créé |
+| 2 security groups (ALB, ECS Service) | ⚠️ Créés, mais règles d'ingress non appliquées (voir limite ci-dessous) |
+| ALB + 2 target groups + 2 listeners | ❌ Non déployables (`elbv2` Pro-only) |
+| Cluster + task definition + service ECS | ❌ Non déployables (`ecs` Pro-only) |
+| CodeDeploy Application + DeploymentGroup | ❌ Non déployables (`codedeploy` Pro-only) |
+| CodePipeline lui-même | ❌ Non déployable (`codepipeline` Pro-only) |
+
+**Contexte** : contrairement à `iam.yaml`/`codebuild.yaml`, `pipeline.yml`
+mobilise 4 services entiers non implémentés par LocalStack Community —
+`elbv2`, `ecs`, `codedeploy`, `codepipeline` (`aws <service> list-*` renvoie
+explicitement *"API for service '...' not yet implemented or pro
+feature"* pour chacun). Contrairement à `AWS::CodeBuild::Project` (accepté
+à la création, seul son `Arn` casse), ces 4 types de ressources font
+échouer la CRÉATION elle-même (`CREATE_FAILED` immédiat) — CloudFormation
+ne les accepte même pas de façon dégradée. Sur ~17 ressources du template,
+seules 6 ont donc pu être réellement déployées et vérifiées.
+
+**Limite additionnelle découverte** : les règles `SecurityGroupIngress`
+définies en ligne sur `AWS::EC2::SecurityGroup` (service par ailleurs
+supporté) ne sont pas appliquées par LocalStack Community — les 2 groupes
+sont créés, mais `describe-security-groups` renvoie une liste d'ingress
+vide pour les deux. Le template est syntaxiquement correct et suit la
+syntaxe CloudFormation standard ; ce n'est pas un défaut de `pipeline.yml`.
+
+**Fichiers ajoutés/modifiés en même temps**, nécessaires pour que
+`pipeline.yml` fonctionne réellement une fois déployé sur un vrai compte
+(pas juste pour le template lui-même) : `codebuild.yaml` (2 variables
+d'environnement `PROJECT_NAME`/`ENVIRONMENT_NAME`), `task-manager/buildspec.yml`
+(génère désormais `imageDetail.json` + rend `taskdef.json`, plus
+`imagedefinitions.json` qui n'était pas le bon format pour l'action
+`CodeDeployToECS`), et deux nouveaux fichiers requis par cette action :
+`task-manager/taskdef.template.json` et `task-manager/appspec.yaml`.
+
+**Non testable en local :**
+- L'ALB, les 2 target groups et les 2 listeners Blue/Green (`elbv2`).
+- Le cluster, la task definition et le service ECS Fargate (`ecs`).
+- L'Application et le DeploymentGroup CodeDeploy — traffic shift progressif,
+  rollback automatique sur échec (`codedeploy`).
+- CodePipeline lui-même — les 3 stages, le déclenchement sur push GitHub
+  réel, l'exécution de bout en bout (`codepipeline`).
+- Les règles d'ingress des security groups (acceptées par CloudFormation,
+  non appliquées par LocalStack).
+- Par construction : tout ce qui dépend de `GitHubConnection` (Test 4) et
+  du NAT Gateway (Test 3), déjà non testables en amont.
 
 ---
 
@@ -167,12 +230,16 @@ neutralise ce cas avec un ARN factice dans sa copie temporaire.
 | 2 | `codebuild.yaml` + `buildspec.yml` | ✅ Passe sur tout le testable ; blocage ECR attendu au-delà |
 | 3 | `vpc.yml` | ✅ Passe sur tout l'émulable ; NAT Gateway non testable (limite LocalStack) |
 | 4 | `iam.yaml` | ✅ Passe intégralement (après correction d'une lacune IAM réelle) |
+| 5 | `pipeline.yml` | ✅ Passe sur 6/~17 ressources déployables ; le reste (ALB/ECS/CodeDeploy/CodePipeline) non testable (limite LocalStack) |
 
-**Point commun à retenir** : trois limites LocalStack Community distinctes
+**Point commun à retenir** : cinq limites LocalStack Community distinctes
 bloquent une vérification 100% locale — `AWS::CodeStarConnections::Connection`
-(Test 4), `AWS::CodeBuild::Project` (Tests 2 et 4), et l'émulation réelle de
-`AWS::EC2::EIP`/`NatGateway` (Test 3). Aucune des trois n'est un défaut des
-templates : elles sont contournées ou documentées dans chaque script pour
-isoler ce qui teste vraiment l'infrastructure du projet. Tout le reste —
-syntaxe CloudFormation, structure des ressources, contenu réel des IAM
-policies, tests unitaires, build Docker — est validé et passe.
+(Test 4), `AWS::CodeBuild::Project` (Tests 2 et 4), l'émulation réelle de
+`AWS::EC2::EIP`/`NatGateway` (Test 3), les services `elbv2`/`ecs`/
+`codedeploy`/`codepipeline` entiers (Test 5), et les règles
+`SecurityGroupIngress` inline (Test 5). Aucune de ces limites n'est un
+défaut des templates : elles sont contournées ou documentées dans chaque
+script pour isoler ce qui teste vraiment l'infrastructure du projet. Tout
+le reste — syntaxe CloudFormation, structure des ressources, contenu réel
+des IAM policies et des policies SNS/EventBridge, tests unitaires, build
+Docker — est validé et passe.

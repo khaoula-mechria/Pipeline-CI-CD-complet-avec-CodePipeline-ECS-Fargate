@@ -74,8 +74,21 @@ phases:
       - docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"
       - docker push "$ECR_REPOSITORY_URI:latest"
       - echo "✅ Image poussée avec succès -> $ECR_REPOSITORY_URI:$IMAGE_TAG"
-      # Fichier utilisé plus tard par la phase de déploiement ECS (CodeDeploy)
-      - printf '[{"name":"app","imageUri":"%s"}]' "$ECR_REPOSITORY_URI:$IMAGE_TAG" > imagedefinitions.json
+      - echo "Génération de imageDetail.json (format attendu par l'action"
+      - echo "CodePipeline CodeDeployToECS — PAS le même format que"
+      - echo "imagedefinitions.json utilisé par l'action ECS standard)"
+      - printf '{"ImageURI":"%s"}' "$ECR_REPOSITORY_URI:$IMAGE_TAG" > imageDetail.json
+      - echo "Rendu de taskdef.json à partir du template versionné (ARN des"
+      - echo "rôles ECS injectés par convention de nommage, cf. iam.yaml ;"
+      - echo "voir infrastructure/cloudformation/pipeline.yml pour le détail)"
+      - |
+        sed \
+          -e "s|<AWS_ACCOUNT_ID>|${AWS_ACCOUNT_ID}|g" \
+          -e "s|<PROJECT_NAME>|${PROJECT_NAME}|g" \
+          -e "s|<ENVIRONMENT_NAME>|${ENVIRONMENT_NAME}|g" \
+          -e "s|<AWS_REGION>|${AWS_DEFAULT_REGION}|g" \
+          taskdef.template.json > taskdef.json
+      - cat taskdef.json
 
 reports:
   unit-tests:
@@ -86,7 +99,8 @@ reports:
 
 artifacts:
   files:
-    - imagedefinitions.json
+    - imageDetail.json
+    - taskdef.json
   discard-paths: yes
 
 cache:

@@ -33,6 +33,19 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   **Test 4** ci-dessous : les 4 rôles, leurs policies et les 4 outputs
   exportés se créent et se vérifient correctement. Une lacune réelle a été
   trouvée et corrigée avant de tester (voir "Bugs corrigés").
+- **`infrastructure/cloudformation/pipeline.yml`** — rempli. Une seule stack
+  qui assemble tout ce qui restait : bucket S3 d'artefacts + topic SNS +
+  règle EventBridge de notification (F4), 2 security groups, ALB + 2 target
+  groups (Blue/Green) + 2 listeners (prod/test), cluster ECS Fargate +
+  Task Definition (bootstrap) + Service (`DeploymentController: CODE_DEPLOY`),
+  CodeDeploy Application + DeploymentGroup (Blue/Green, traffic shift
+  `ECSLinear10PercentEvery1Minute`, rollback automatique sur échec), et
+  CodePipeline (Source GitHub → Build CodeBuild → Deploy CodeDeployToECS).
+  Pas de `ecs.yaml` séparé : le service ECS est créé directement ici.
+  Importe les 4 rôles + la connexion GitHub de `iam.yaml`, le VPC/subnets de
+  `vpc.yml`, le repo ECR de `ecr.yaml`, et référence le projet `codebuild.yaml`
+  par convention de nommage. Validé via
+  `infrastructure/scripts/test5-pipeline.sh` — voir **Test 5** ci-dessous.
 
 ### Application (`task-manager/`, Node.js/Express)
 
@@ -43,7 +56,20 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   devDependencies, exécution en utilisateur non-root, `HEALTHCHECK` intégré.
 - `buildspec.yml` — phases install (npm ci + SAST Semgrep) → pre_build (login
   ECR) → build (docker build) → post_build (tests + seuil de couverture 80% +
-  push ECR).
+  push ECR). Depuis `pipeline.yml` : post_build génère aussi `imageDetail.json`
+  (format attendu par l'action CodePipeline `CodeDeployToECS` — remplace
+  l'ancien `imagedefinitions.json`, format pour l'action ECS standard non
+  utilisée ici) et rend `taskdef.json` à partir de
+  `taskdef.template.json` (ARN des rôles ECS injectés via les variables
+  d'environnement `PROJECT_NAME`/`ENVIRONMENT_NAME`/`AWS_ACCOUNT_ID` ajoutées
+  au projet CodeBuild dans `codebuild.yaml`).
+- `taskdef.template.json` — template de Task Definition ECS versionné dans le
+  repo applicatif, avec placeholders (`<PROJECT_NAME>`, `<AWS_ACCOUNT_ID>`...)
+  rendus au build, et `<IMAGE1_NAME>` laissé tel quel (substitué par
+  CodePipeline lui-même via `Image1ContainerName`).
+- `appspec.yaml` — AppSpec CodeDeploy pour ECS (statique, aucune valeur
+  spécifique au compte -> versionné tel quel, consommé directement depuis
+  l'artefact Source par l'action `CodeDeployToECS`).
 - `package.json` / `package-lock.json` propres à `task-manager/` (app
   autonome, cohérente avec le futur repo GitHub dédié pointé par
   `GitHubRepoUrl` dans `codebuild.yaml`).
@@ -82,6 +108,16 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   / `iam list-attached-role-policies`. Seule `GitHubConnection` n'est validée
   que syntaxiquement (cfn-lint), pas déployée — limite LocalStack Community
   documentée ci-dessous.
+- `test5-pipeline.sh` exécuté de bout en bout (LocalStack Community, exit
+  code 0, après corrections — voir Test 5 ci-dessous) : sur les ~17
+  ressources de `pipeline.yml`, les 6 réellement supportées par LocalStack
+  Community (bucket S3 versionné, topic SNS + policy, règle EventBridge,
+  log group, 2 security groups) sont déployées et vérifiées. Les 11 autres
+  (ALB, 2 target groups, 2 listeners, cluster/task def/service ECS,
+  CodeDeploy Application + DeploymentGroup, CodePipeline lui-même) ne sont
+  validées que syntaxiquement (cfn-lint) — limite LocalStack Community
+  documentée ci-dessous, bien plus étendue que pour les templates
+  précédents.
 
 ### Test 4 — `iam.yaml` (rôles IAM du pipeline)
 
@@ -157,6 +193,98 @@ d'autre lacune trouvée.
   compte AWS peut confirmer qu'elles couvrent effectivement tous les appels
   faits par CodeDeploy/ECS.
 
+### Test 5 — `pipeline.yml` (CodePipeline + CodeDeploy Blue/Green + ECS Fargate)
+
+**Contenu ajouté en même temps** (nécessaire pour que `pipeline.yml`
+fonctionne réellement, pas juste au niveau du template) :
+- `codebuild.yaml` : ajout de 2 variables d'environnement au projet
+  CodeBuild (`PROJECT_NAME`, `ENVIRONMENT_NAME`) — sans elles, `buildspec.yml`
+  n'a aucun moyen de construire les ARN des rôles ECS au moment du build.
+- `task-manager/buildspec.yml` : remplace la génération de
+  `imagedefinitions.json` (format de l'action CodePipeline ECS standard,
+  jamais utilisée ici) par `imageDetail.json` (`{"ImageURI": "..."}` — format
+  attendu par `Image1ArtifactName` de l'action `CodeDeployToECS`) et par le
+  rendu de `taskdef.json` à partir de `taskdef.template.json` (`sed` sur les
+  4 placeholders `<AWS_ACCOUNT_ID>`/`<PROJECT_NAME>`/`<ENVIRONMENT_NAME>`/
+  `<AWS_REGION>` ; `<IMAGE1_NAME>` reste intact, substitué par CodePipeline
+  lui-même).
+- `task-manager/taskdef.template.json` et `task-manager/appspec.yaml` :
+  fichiers requis par l'action `CodeDeployToECS`
+  (`TaskDefinitionTemplateArtifact`/`AppSpecTemplateArtifact`), absents du
+  repo jusqu'ici.
+
+**Décisions d'architecture notables :**
+- Pas de `ecs.yaml` séparé (contrairement à ce que suggérait la note
+  d'ordre de déploiement dans `iam.yaml`) : le cluster/task definition/
+  service ECS sont créés directement dans `pipeline.yml`, avec l'ALB et les
+  2 target groups Blue/Green — regrouper évite un problème d'ordre réel
+  (le DeploymentGroup CodeDeploy exige que le service ECS existe déjà à sa
+  création ; créer `ecs.yaml` après `pipeline.yaml`, comme suggéré par la
+  note originale, aurait été impossible techniquement).
+- `DeploymentConfigName: CodeDeployDefault.ECSLinear10PercentEvery1Minute`
+  choisi comme l'équivalent prédéfini AWS le plus proche du traffic shift
+  F3 du cahier des charges (10 % → 100 % en ~10 min) — AWS ne propose pas de
+  config avec paliers 10/50/100 % exacts.
+- Notifications SNS de changement d'état (F4) implémentées via une règle
+  EventBridge (pas via le statement `sns:Publish` déjà présent sur
+  `CodePipelineServiceRole`, qui lui est réservé à un futur stage
+  `ManualApproval` — CodePipeline ne publie pas nativement sur SNS pour les
+  événements SUCCESS/FAILURE).
+- `taskdef.json` vient de l'artefact de **Build** (généré dynamiquement,
+  ARN réels injectés) ; `appspec.yaml` vient de l'artefact **Source**
+  (statique, aucune valeur spécifique au compte).
+
+**Lacune de script trouvée et corrigée en testant** (dans le script, pas
+dans `pipeline.yml`) : le premier jet des fonctions Python de suppression de
+blocs (réutilisées du script précédent) utilisait un lookahead ancré sur un
+saut de ligne littéral (`\n  Ressource:`) pour détecter où s'arrêter. Ça
+fonctionne uniquement quand deux ressources sont séparées par une ligne
+vide simple — dès qu'un bloc de commentaires s'intercale (très fréquent
+dans ce projet, très commenté), le lookahead ne matchait plus et la
+suppression dévorait tout jusqu'à la ressource suivante, supprimant des
+ressources qui auraient dû être gardées (`PrivateRouteTable1` dans une
+copie de test de `vpc.yml`, puis la clé `Outputs:` elle-même dans une copie
+de `pipeline.yml`). Corrigé en ancrant le lookahead avec `re.MULTILINE`
+(`^  Ressource:` / `^[A-Za-z]` pour les clés de premier niveau) plutôt que
+sur un `\n` littéral.
+
+**Limite LocalStack BEAUCOUP plus étendue que pour les templates
+précédents** : sur les ~17 ressources de `pipeline.yml`, **11** reposent sur
+des services que LocalStack Community n'implémente pas du tout —
+`elbv2` (ALB, 2 target groups, 2 listeners), `ecs` (cluster, task
+definition, service), `codedeploy` (Application, DeploymentGroup) et
+`codepipeline` (le pipeline lui-même). Contrairement à
+`AWS::CodeBuild::Project` (accepté à la création, seul son `Arn` est cassé),
+ces 4 services font échouer la création de la ressource elle-même
+(`CREATE_FAILED` immédiat) — CloudFormation ne les accepte même pas de
+façon dégradée. Seules les **6** ressources restantes ont pu être déployées
+et vérifiées : bucket S3 (versioning confirmé), topic SNS + sa policy
+(condition `ArnEquals` sur l'ARN de la règle EventBridge confirmée), règle
+EventBridge (pattern confirmé via `describe-rule`), log group, et les 2
+security groups (créés, mais voir la limite suivante).
+
+**Limite LocalStack additionnelle découverte** : les règles `SecurityGroupIngress`
+définies en ligne dans `AWS::EC2::SecurityGroup` ne sont PAS appliquées par
+LocalStack Community — `aws ec2 describe-security-groups` confirme que les
+2 groupes sont bien créés (et que leur règle d'egress générique passe),
+mais renvoie une liste d'ingress vide dans les deux cas. C'est cohérent
+avec les autres limites déjà documentées (émulation partielle de services
+par ailleurs "supportés") ; le template lui-même est syntaxiquement correct
+(cfn-lint) et suit la syntaxe standard CloudFormation.
+
+**Ce qui n'est PAS testable en local** (résumé) :
+- L'ALB, les 2 target groups et les 2 listeners (Blue/Green) — `elbv2`
+  Pro-only.
+- Le cluster, la task definition et le service ECS Fargate — `ecs` Pro-only.
+- L'Application et le DeploymentGroup CodeDeploy (traffic shift, rollback
+  automatique) — `codedeploy` Pro-only.
+- CodePipeline lui-même (les 3 stages Source/Build/Deploy, le déclenchement
+  réel sur push GitHub, l'exécution bout en bout) — `codepipeline` Pro-only.
+- Les règles d'ingress des security groups — acceptées par cfn-lint et par
+  CloudFormation, mais non appliquées par LocalStack Community.
+- Par construction, tout ce qui dépend de `GitHubConnection` (Pro-only,
+  Test 4) et du NAT Gateway (Pro-only, Test 3) reste non plus testable ici.
+
 ### Bugs corrigés en cours de route
 
 - `package.json` (racine) : clés `scripts`/`devDependencies` dupliquées
@@ -194,41 +322,48 @@ d'autre lacune trouvée.
   connu) — son `Fn::GetAtt ...Arn` renvoie `"unknown"`, ce qui cassait
   l'import fait par `iam.yaml` en aval ; le script isole maintenant ce cas
   avec un ARN factice (détail complet dans le Test 4 ci-dessus).
+- `pipeline.yml` + `test5-pipeline.sh` : voir le détail complet dans le
+  Test 5 ci-dessus — pas de bug dans `pipeline.yml` lui-même (premier jet
+  cfn-lint propre), mais un bug de script (lookahead regex cassé par les
+  blocs de commentaires, corrigé avec `re.MULTILINE`) et trois fichiers
+  ajoutés en même temps parce que `pipeline.yml` ne pouvait pas fonctionner
+  sans eux : `codebuild.yaml` (2 variables d'environnement), `buildspec.yml`
+  (génération `imageDetail.json` + `taskdef.json`), et les 2 nouveaux
+  fichiers `task-manager/taskdef.template.json` / `appspec.yaml`.
 
 ## Pas encore fait
 
-- **`infrastructure/cloudformation/pipeline.yml`** — vide (placeholder,
-  CodePipeline + déploiement ECS Fargate).
 - Déploiement réel sur AWS (aucun accès AWS pour l'instant) : import du token
-  GitHub (`aws codebuild import-source-credentials`), déploiement réel de
-  `ecr.yaml` puis `codebuild.yaml`, vérification que le build va bien
-  jusqu'au push ECR — voir la sous-section "Passage à AWS réel" du Test 2
-  dans `infrastructure/scripts/README-tests-locaux.md`.
+  GitHub (`aws codebuild import-source-credentials`), autorisation manuelle
+  de `GitHubConnection`, déploiement réel des 5 stacks dans l'ordre
+  (`vpc.yml` → `ecr.yaml` → `iam.yaml` → `codebuild.yaml` → `pipeline.yml`),
+  premier passage du pipeline de bout en bout (Source → Build → Deploy
+  Blue/Green) — rien de tout cela n'est vérifiable sans compte AWS réel, vu
+  l'étendue des limites LocalStack Community documentées dans le Test 5.
 - Fichier fantôme connu mais non traité : `task-manager/ server.js` (avec un
   espace en début de nom, vide, tracké dans git) — doublon de
   `task-manager/server.js`, à nettoyer un jour.
+- Dashboard CloudWatch + alarmes (EPIC CICD-EP-04 du cahier des charges,
+  hors `pipeline.yml` : métriques custom, widgets, alarme si pipeline
+  > 15 min) — pas encore commencé.
 
 ## Prochaine étape
 
-L'IAM (`iam.yaml`) est maintenant en place et testé (Test 4). Prochaine
-étape logique : **`pipeline.yml`**, qui peut désormais importer les 4 ARNs
-de rôles exportés par `iam.yaml`, les exports de `vpc.yml` (subnets, VPC
-id) et de `ecr.yaml`/`codebuild.yaml` (repo, projet build), pour assembler
-CodePipeline (stages Source/Build/Deploy) + les ressources CodeDeploy
-(Application + DeploymentGroup Blue/Green) + le service ECS Fargate (+ ALB
-si pas déjà prévu ailleurs). Points à garder en tête en écrivant
-`pipeline.yml` (contraintes déjà posées par `iam.yaml`) :
-- Le bucket S3 d'artefacts doit s'appeler
-  `${ProjectName}-${Environment}-pipeline-artifacts-${AWS::AccountId}`
-  (convention attendue par `CodePipelineServiceRole`).
-- L'application et le deployment group CodeDeploy doivent être préfixés
-  `${ProjectName}-${Environment}-` (convention attendue par
-  `CodePipelineServiceRole`/`TriggerCodeDeploy`).
-- Le topic SNS de notifications doit être préfixé
-  `${ProjectName}-${Environment}-`.
-- L'action Deploy doit utiliser le provider `CodeDeployToECS` (pas le
-  provider ECS standard) pour rester cohérent avec `CodeDeployServiceRole`
-  (policy managée `AWSCodeDeployRoleForECS`, spécifique au Blue/Green ECS).
+L'infrastructure CloudFormation est maintenant complète et testée dans la
+limite de ce que LocalStack Community permet (Tests 1 à 5). Il ne reste
+plus de template CloudFormation vide. Deux chemins possibles pour la suite,
+selon ce qui devient disponible en premier :
+1. **Accès à un vrai compte AWS** : dérouler le déploiement réel dans
+   l'ordre documenté ci-dessus, en particulier valider empiriquement tout
+   ce que LocalStack n'a pas pu vérifier (ALB/target groups, ECS
+   Fargate réel, CodeDeploy Blue/Green avec vrai traffic shift,
+   CodePipeline déclenché par un vrai push GitHub).
+2. **Sans accès AWS pour l'instant** : avancer sur l'EPIC Observabilité
+   (dashboard CloudWatch + alarmes, CICD-EP-04 du cahier des charges) —
+   c'est la seule brique fonctionnelle qui n'existe dans aucun template
+   actuel et qui reste largement testable en local (CloudWatch Logs/metrics
+   sont supportés par LocalStack Community, contrairement à ELBv2/ECS/
+   CodeDeploy/CodePipeline).
 
 ## Historique des mises à jour de ce fichier
 
@@ -245,3 +380,15 @@ si pas déjà prévu ailleurs). Points à garder en tête en écrivant
   corrigés (mêmes patterns de robustesse LocalStack que Test 3). Découverte
   d'une nouvelle limite LocalStack Community : `AWS::CodeBuild::Project` est
   Pro-only (comme `CodeStarConnections`), contournée dans le script de test.
+- 2026-07-24 — ajout et validation du Test 5 (`pipeline.yml` +
+  `test5-pipeline.sh`) : `pipeline.yml` rempli en une seule stack
+  (CodePipeline + CodeDeploy Blue/Green + ALB + ECS Fargate, pas de
+  `ecs.yaml` séparé — voir justification dans le Test 5). Mis à jour en
+  même temps : `codebuild.yaml` (2 env vars), `buildspec.yml` (génération
+  `imageDetail.json`/`taskdef.json`), ajout de
+  `task-manager/taskdef.template.json` et `task-manager/appspec.yaml`.
+  Découverte de deux nouvelles limites LocalStack Community : 4 services
+  entiers non implémentés (`elbv2`, `ecs`, `codedeploy`, `codepipeline` —
+  11 des ~17 ressources du template), et les règles `SecurityGroupIngress`
+  inline non appliquées même quand le service EC2 est par ailleurs supporté.
+  Plus aucun template CloudFormation du projet n'est vide.

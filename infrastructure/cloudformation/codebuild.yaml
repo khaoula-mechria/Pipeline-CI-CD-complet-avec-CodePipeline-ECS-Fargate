@@ -149,6 +149,13 @@ Resources:
             Value: !Ref AWS::Region
           - Name: AWS_ACCOUNT_ID
             Value: !Ref AWS::AccountId
+          # Utilisées par buildspec.yml pour générer dynamiquement taskdef.json
+          # (ARN des rôles ECS = ${ProjectName}-${Environment}-ecs-*-role, par
+          # convention de nommage — voir iam.yaml) sans les coder en dur.
+          - Name: PROJECT_NAME
+            Value: !Ref ProjectName
+          - Name: ENVIRONMENT_NAME
+            Value: !Ref Environment
 
       # Pas d'artefact S3 : le "livrable" du build est l'image poussée
       # vers ECR directement dans buildspec.yml (post_build).

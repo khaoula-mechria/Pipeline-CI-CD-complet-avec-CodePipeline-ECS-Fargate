@@ -1,0 +1,30 @@
+{
+  "family": "<PROJECT_NAME>-<ENVIRONMENT_NAME>-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/<PROJECT_NAME>-<ENVIRONMENT_NAME>-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/<PROJECT_NAME>-<ENVIRONMENT_NAME>-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "<IMAGE1_NAME>",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/<PROJECT_NAME>-<ENVIRONMENT_NAME>",
+          "awslogs-region": "<AWS_REGION>",
+          "awslogs-stream-prefix": "app"
+        }
+      }
+    }
+  ]
+}

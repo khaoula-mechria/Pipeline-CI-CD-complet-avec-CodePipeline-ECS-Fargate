@@ -1,0 +1,617 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  CodePipeline + CodeDeploy Blue/Green + service ECS Fargate pour le projet
+  (CI/CD AWS). Assemble en une seule stack tout ce qui reste après
+  vpc.yml / ecr.yaml / iam.yaml / codebuild.yaml :
+  - ALB + 2 target groups (Blue/Green) + 2 listeners (prod + test).
+  - Cluster ECS Fargate + Task Definition (bootstrap) + Service
+    (DeploymentController: CODE_DEPLOY, réseau dans les subnets privés).
+  - CodeDeploy Application + DeploymentGroup (Blue/Green, traffic shift
+    progressif, rollback automatique sur échec).
+  - CodePipeline (Source GitHub -> Build CodeBuild -> Deploy CodeDeployToECS).
+  - Bucket S3 d'artefacts + topic SNS + règle EventBridge de notification.
+
+# ------------------------------------------------------------------
+# NOTE SUR L'ORDRE DE DÉPLOIEMENT (déjà documenté dans iam.yaml) :
+#   1. vpc.yaml   2. ecr.yaml   3. iam.yaml   4. codebuild.yaml
+#   5. pipeline.yaml  <- cette stack (importe les ARNs/exports des 4 stacks
+#                        précédentes ; crée elle-même l'ECS Fargate Service,
+#                        pas de ecs.yaml séparé)
+#
+# PRÉREQUIS AVANT DÉPLOIEMENT RÉEL :
+#   - GitHubConnection (iam.yaml) doit être autorisée manuellement dans la
+#     console AWS (Developer Tools > Connections) — sinon le stage Source
+#     de ce pipeline reste bloqué en PENDING.
+#   - Le repo GitHub pointé par FullRepositoryId doit contenir, à sa racine :
+#     buildspec.yml, appspec.yaml, taskdef.template.json (voir task-manager/).
+# ------------------------------------------------------------------
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: taskmanager
+    AllowedPattern: '^[a-z][a-z0-9-]*$'
+    Description: Doit correspondre au ProjectName des autres stacks.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Doit correspondre à l'Environment des autres stacks.
+
+  FullRepositoryId:
+    Type: String
+    Default: ton-user/taskmanager
+    Description: >
+      Dépôt GitHub au format 'owner/repo', utilisé par le stage Source
+      (action CodeStarSourceConnection). Doit être le même dépôt que
+      GitHubRepoUrl dans codebuild.yaml.
+
+  BranchName:
+    Type: String
+    Default: main
+    Description: >
+      Branche surveillée par ce pipeline. Volontairement une seule branche
+      (main) : la validation build/test des branches feature/* est déjà
+      couverte indépendamment par le webhook CodeBuild (codebuild.yaml,
+      déclenché sur main OU develop) — pas besoin d'un second pipeline pour
+      ça.
+
+  ContainerPort:
+    Type: Number
+    Default: 3000
+    Description: Port exposé par le conteneur (voir task-manager/Dockerfile EXPOSE).
+
+  ContainerCpu:
+    Type: String
+    Default: '256'
+    Description: >
+      CPU Fargate (unités). Doit correspondre à la valeur "cpu" écrite dans
+      task-manager/taskdef.template.json.
+
+  ContainerMemory:
+    Type: String
+    Default: '512'
+    Description: >
+      Mémoire Fargate (Mo). Doit correspondre à la valeur "memory" écrite
+      dans task-manager/taskdef.template.json.
+
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: Nombre de tâches Fargate désiré (haute dispo sur 2 AZ).
+
+  HealthCheckPath:
+    Type: String
+    Default: /health
+
+Resources:
+
+  # ==========================================================================
+  # BUCKET S3 D'ARTEFACTS DU PIPELINE
+  # Nom EXACT attendu par CodePipelineServiceRole (iam.yaml, statement
+  # PipelineArtifactsBucketAccess) : ne pas changer la convention de nommage
+  # sans mettre à jour iam.yaml en conséquence. Versioning obligatoire : la
+  # policy IAM autorise s3:GetBucketVersioning, et CodePipeline exige un
+  # bucket versionné pour son ArtifactStore.
+  # ==========================================================================
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-pipeline-artifacts-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldArtifactVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================================
+  # NOTIFICATIONS SNS (F4 du cahier des charges)
+  # Nom préfixé ${ProjectName}-${Environment}- : convention attendue par
+  # CodePipelineServiceRole (statement PublishPipelineNotifications) — cette
+  # permission est réservée à un futur stage ManualApproval (CodePipeline
+  # publie alors directement via son propre rôle). Les notifications de
+  # changement d'état (SUCCESS/FAILED/...) implémentées ici passent par
+  # EventBridge, qui a besoin de SA PROPRE permission de publication
+  # (TopicPolicy ci-dessous), indépendante du rôle CodePipeline.
+  # ==========================================================================
+  PipelineNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-pipeline-notifications'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  PipelineNotificationsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref PipelineNotificationsTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgePublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref PipelineNotificationsTopic
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt PipelineStateChangeRule.Arn
+
+  PipelineStateChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-pipeline-state-change'
+      Description: >
+        Notifie PipelineNotificationsTopic à chaque changement d'état du
+        pipeline (démarrage, succès, échec...) — F4 du cahier des charges.
+      EventPattern:
+        source:
+          - aws.codepipeline
+        detail-type:
+          - 'CodePipeline Pipeline Execution State Change'
+        detail:
+          pipeline:
+            - !Sub '${ProjectName}-${Environment}-pipeline'
+          state:
+            - STARTED
+            - SUCCEEDED
+            - FAILED
+            - RESUMED
+            - CANCELED
+            - SUPERSEDED
+      Targets:
+        - Arn: !Ref PipelineNotificationsTopic
+          Id: PipelineNotificationsTarget
+
+  # ==========================================================================
+  # SECURITY GROUPS
+  # ALB ouvert au public sur 80 (prod) et 8080 (listener de test CodeDeploy,
+  # utilisé UNIQUEMENT pendant la validation Blue/Green — jamais exposé à de
+  # vrais utilisateurs). Le service ECS n'accepte du trafic QUE depuis l'ALB.
+  # ==========================================================================
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'ALB - ${ProjectName}-${Environment}'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-vpc-id'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Trafic prod (listener principal)
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+          Description: >
+            Listener de test CodeDeploy (validation de la version Green
+            avant le traffic shift) — à restreindre à un CIDR interne en
+            production si l'accès public n'est pas souhaité.
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  EcsServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'ECS Service - ${ProjectName}-${Environment}'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-vpc-id'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: Trafic autorisé UNIQUEMENT depuis l'ALB (Blue et Green)
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================================
+  # APPLICATION LOAD BALANCER + 2 TARGET GROUPS (Blue/Green) + 2 LISTENERS
+  # ==========================================================================
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-alb'
+      Type: application
+      Scheme: internet-facing
+      Subnets: !Split
+        - ','
+        - !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-public-subnet-ids'
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  BlueTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-tg-blue'
+      TargetType: ip
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-vpc-id'
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        # Cycle Blue/Green plus rapide : pas besoin de garder les connexions
+        # ouvertes 5 min (défaut) sur un environnement dev/staging.
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  GreenTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-tg-green'
+      TargetType: ip
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-vpc-id'
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  ProdListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BlueTargetGroup
+
+  TestListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 8080
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref GreenTargetGroup
+
+  # ==========================================================================
+  # ECS CLUSTER + LOG GROUP + TASK DEFINITION (bootstrap) + SERVICE
+  # La Task Definition ci-dessous sert UNIQUEMENT au premier déploiement
+  # (image "latest" bootstrap). À partir du premier passage du pipeline,
+  # c'est l'action CodeDeployToECS qui enregistre les nouvelles révisions
+  # (à partir de taskdef.json + imageDetail.json produits par le build) —
+  # cette dérive est un comportement ATTENDU et documenté du pattern
+  # ECS Blue/Green (voir action-reference-ECSbluegreen.html), pas un bug.
+  # ==========================================================================
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-${Environment}-cluster'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  EcsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}-${Environment}'
+      # Rétention 30 jours : F4 du cahier des charges.
+      RetentionInDays: 30
+
+  EcsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-${Environment}-task'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      ExecutionRoleArn: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-ecs-execution-role-arn'
+      TaskRoleArn: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-ecs-task-role-arn'
+      ContainerDefinitions:
+        - Name: app
+          Image: !Sub
+            - '${RepoUri}:latest'
+            - RepoUri: !ImportValue
+                'Fn::Sub': '${ProjectName}-${Environment}-ecr-uri'
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub 'wget --no-verbose --tries=1 --spider http://localhost:${ContainerPort}${HealthCheckPath} || exit 1'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 10
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref EcsLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  EcsService:
+    Type: AWS::ECS::Service
+    # Le service doit être créé APRÈS les listeners : ECS valide que l'ALB
+    # est prêt à router avant de considérer le service stable.
+    DependsOn:
+      - ProdListener
+      - TestListener
+    Properties:
+      ServiceName: !Sub '${ProjectName}-${Environment}-service'
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref EcsTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentController:
+        Type: CODE_DEPLOY
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Split
+            - ','
+            - !ImportValue
+              'Fn::Sub': '${ProjectName}-${Environment}-private-subnet-ids'
+          SecurityGroups:
+            - !Ref EcsServiceSecurityGroup
+      LoadBalancers:
+        - ContainerName: app
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref BlueTargetGroup
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================================
+  # CODEDEPLOY — APPLICATION + DEPLOYMENT GROUP (Blue/Green ECS)
+  # ServiceRoleArn importé de iam.yaml (policy managée AWSCodeDeployRoleForECS,
+  # cf. CodeDeployServiceRole). DeploymentConfigName ECSLinear10PercentEvery1Minute
+  # est l'équivalent prédéfini AWS le plus proche du traffic shift F3 du
+  # cahier des charges (10 % -> 100 % en ~10 min, palier toutes les minutes) —
+  # AWS ne propose pas de config prédéfinie avec paliers 10/50/100 exacts.
+  # ==========================================================================
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub '${ProjectName}-${Environment}-app'
+      ComputePlatform: ECS
+
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub '${ProjectName}-${Environment}-dg'
+      ServiceRoleArn: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-codedeploy-role-arn'
+      DeploymentConfigName: CodeDeployDefault.ECSLinear10PercentEvery1Minute
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      BlueGreenDeploymentConfiguration:
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          TerminationWaitTimeInMinutes: 5
+        DeploymentReadyOption:
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+          WaitTimeInMinutes: 0
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - TargetGroups:
+              - Name: !GetAtt BlueTargetGroup.TargetGroupName
+              - Name: !GetAtt GreenTargetGroup.TargetGroupName
+            ProdTrafficRoute:
+              ListenerArns:
+                - !Ref ProdListener
+            TestTrafficRoute:
+              ListenerArns:
+                - !Ref TestListener
+      ECSServices:
+        - ClusterName: !Ref EcsCluster
+          ServiceName: !GetAtt EcsService.Name
+      # Rollback automatique sur échec de déploiement (health checks ECS/ALB
+      # qui échouent pendant le traffic shift) — critère US-03 / F3.
+      AutoRollbackConfiguration:
+        Enabled: true
+        Events:
+          - DEPLOYMENT_FAILURE
+
+  # ==========================================================================
+  # CODEPIPELINE — Source (GitHub) -> Build (CodeBuild) -> Deploy (CodeDeployToECS)
+  # ApplicationName/DeploymentGroupName référencés en dur via convention de
+  # nommage (comme ApplicationName/ServiceName ci-dessus) plutôt que par Ref,
+  # pour rester cohérent avec le reste du fichier et éviter toute ambiguïté
+  # sur ce que Ref renvoie pour ces deux types de ressources.
+  # ==========================================================================
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    DependsOn:
+      - CodeDeployDeploymentGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-pipeline'
+      RoleArn: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-codepipeline-role-arn'
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactsBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !ImportValue
+                  'Fn::Sub': '${ProjectName}-${Environment}-github-connection-arn'
+                FullRepositoryId: !Ref FullRepositoryId
+                BranchName: !Ref BranchName
+                DetectChanges: true
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                # Convention de nommage codebuild.yaml : '${ProjectName}-${Environment}-build'.
+                ProjectName: !Sub '${ProjectName}-${Environment}-build'
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: '1'
+              Configuration:
+                ApplicationName: !Sub '${ProjectName}-${Environment}-app'
+                DeploymentGroupName: !Sub '${ProjectName}-${Environment}-dg'
+                # taskdef.json est GÉNÉRÉ par buildspec.yml (ARN de rôles
+                # injectés au build, cf. task-manager/taskdef.template.json)
+                # -> vient de l'artefact de BUILD, pas de Source.
+                TaskDefinitionTemplateArtifact: BuildArtifact
+                TaskDefinitionTemplatePath: taskdef.json
+                # appspec.yaml ne contient aucune valeur spécifique au compte
+                # -> peut rester versionné tel quel dans le repo (Source).
+                AppSpecTemplateArtifact: SourceArtifact
+                AppSpecTemplatePath: appspec.yaml
+                Image1ArtifactName: BuildArtifact
+                # Doit correspondre au placeholder <IMAGE1_NAME> utilisé
+                # dans taskdef.template.json (champ "image" du conteneur).
+                Image1ContainerName: IMAGE1_NAME
+              InputArtifacts:
+                - Name: SourceArtifact
+                - Name: BuildArtifact
+              RunOrder: 1
+
+Outputs:
+
+  LoadBalancerDnsName:
+    Description: DNS de l'ALB (point d'entrée public de l'application)
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alb-dns'
+
+  EcsClusterName:
+    Description: Nom du cluster ECS Fargate
+    Value: !Ref EcsCluster
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-name'
+
+  EcsServiceName:
+    Description: Nom du service ECS Fargate
+    Value: !GetAtt EcsService.Name
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-service-name'
+
+  CodePipelineName:
+    Description: Nom du pipeline CodePipeline
+    Value: !Sub '${ProjectName}-${Environment}-pipeline'
+
+  CodeDeployApplicationName:
+    Description: Nom de l'application CodeDeploy
+    Value: !Sub '${ProjectName}-${Environment}-app'
+
+  CodeDeployDeploymentGroupName:
+    Description: Nom du deployment group CodeDeploy
+    Value: !Sub '${ProjectName}-${Environment}-dg'
+
+  PipelineArtifactsBucketName:
+    Description: Nom du bucket S3 d'artefacts du pipeline
+    Value: !Ref PipelineArtifactsBucket
+
+  PipelineNotificationsTopicArn:
+    Description: ARN du topic SNS de notifications du pipeline
+    Value: !Ref PipelineNotificationsTopic
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-pipeline-notifications-arn'
