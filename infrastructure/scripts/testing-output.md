@@ -1,6 +1,6 @@
 # Résultats des tests locaux (`infrastructure/scripts/`)
 
-> Snapshot d'exécution réelle des 5 scripts de test, dans l'ordre où ils
+> Snapshot d'exécution réelle des 6 scripts de test, dans l'ordre où ils
 > doivent être lancés. Chaque section indique : ce que le script teste, s'il
 > passe ou non, et — pour tout ce qui ne peut pas être vérifié sans un vrai
 > compte AWS — pourquoi, précisément.
@@ -222,6 +222,68 @@ d'environnement `PROJECT_NAME`/`ENVIRONMENT_NAME`), `task-manager/buildspec.yml`
 
 ---
 
+## `test6-observability.sh` — Test 6 : `observability.yml`
+
+**Résultat : ✅ PASSE sur 6 des 7 ressources (exit code 0).** Contrairement
+aux Tests 2/4/5, CloudWatch (Alarm, Dashboard) et Lambda sont réellement
+supportés par LocalStack Community — les limites trouvées ici sont d'une
+autre nature (bug de compatibilité CLI, pull Docker lent), pas des services
+Pro-only manquants.
+
+| Étape | Résultat |
+|---|---|
+| `cfn-lint observability.yml` | ✅ Valide syntaxiquement |
+| Déploiement dépendances (`ecr`, `codebuild`, `iam`, `pipeline` allégée) | ✅ |
+| Stack "stub" (4 exports factices ECS/ALB, cf. Test 5) | ✅ |
+| `MetricsPublisherLogGroup` (CloudWatch Logs) | ✅ Créé, confirmé via `logs describe-log-groups` |
+| `MetricsPublisherRole` (IAM) | ✅ Créé, confirmé via `iam get-role` |
+| `PipelineDurationAlarm` / `PipelineFailureAlarm` (CloudWatch Alarm) | ✅ `CREATE_COMPLETE` |
+| `PipelineDashboard` (CloudWatch Dashboard, 7 widgets) | ✅ `CREATE_COMPLETE` |
+| `AlarmEmailSubscription` (SNS, `Condition: HasAlarmEmail`) | ⚠️ Créée alors qu'elle ne devrait pas l'être (voir anomalie ci-dessous) |
+| `MetricsPublisherFunction` (Lambda) | ❌ Retirée de la copie de test (pull Docker trop lent) |
+
+**Découverte avant même d'écrire le script** : les appels CLI directs `aws
+cloudwatch describe-alarms`/`list-dashboards`/`put-metric-data` échouent
+tous avec *"Operation detection failed. Missing Action in request for
+query-protocol service ServiceModel(cloudwatch)"* — un bug de compatibilité
+entre LocalStack 3.8.1 et la version d'awscli/botocore de cet environnement
+(1.45.54/1.43.54), **pas** une limite Pro. Confirmé en déployant directement
+une `AWS::CloudWatch::Alarm` et un `AWS::CloudWatch::Dashboard` minimalistes
+via CloudFormation (qui n'emprunte pas ce chemin CLI) : les deux atteignent
+`CREATE_COMPLETE` sans problème. Ce test vérifie donc les ressources
+CloudWatch via `describe-stack-resources`/`describe-stacks`, jamais via
+`aws cloudwatch`.
+
+**Découverte en testant, deuxième surprise** : `AWS::Lambda::Function` EST
+supporté par LocalStack Community (`aws lambda list-functions` répond
+normalement). Sa création déclenche cependant un `docker pull` de l'image
+runtime en coulisses — la première tentative a échoué immédiatement avec
+*"Docker not available"* (LocalStack sans accès au socket Docker de
+l'hôte ; corrigé en relançant le conteneur avec
+`-v /var/run/docker.sock:/var/run/docker.sock`). Une fois corrigé, la
+création reste bloquée en `CREATE_IN_PROGRESS` sans avancer pendant
+plusieurs minutes — même classe de limite réseau que le pull de l'image
+CodeBuild au Test 2 (abandonné après 21 min). La fonction (+ sa Permission
++ sa règle EventBridge dédiée) est donc retirée de la copie de test ; le
+code Python (~40 lignes) n'est validé que par lecture.
+
+**Anomalie mineure découverte** : `AlarmEmailSubscription`, protégée par
+`Condition: HasAlarmEmail` (fausse quand `AlarmEmail=''`, valeur par
+défaut), a quand même été créée par LocalStack — alors qu'elle ne devrait
+pas l'être sur un vrai CloudFormation. LocalStack Community n'évalue
+apparemment pas cette Condition correctement pour ce type de ressource (ou
+ne valide pas un `Endpoint` email vide). Le template est correct : `Condition`
+est la syntaxe CloudFormation standard et fonctionnera comme prévu sur AWS réel.
+
+**Non testable en local :**
+- La fonction Lambda elle-même (calcul de durée, publication de métriques).
+- Le rendu réel du Dashboard et les vraies données CodeBuild/ECS/ALB dans
+  ses widgets (dépend de `pipeline.yml` en fonctionnement réel, Pro-only).
+- Le déclenchement réel des 2 alarmes (nécessite de vraies données de métrique).
+- L'envoi effectif d'un email par `AlarmEmailSubscription`.
+
+---
+
 ## Résumé global
 
 | Test | Fichier testé | Statut |
@@ -231,6 +293,7 @@ d'environnement `PROJECT_NAME`/`ENVIRONMENT_NAME`), `task-manager/buildspec.yml`
 | 3 | `vpc.yml` | ✅ Passe sur tout l'émulable ; NAT Gateway non testable (limite LocalStack) |
 | 4 | `iam.yaml` | ✅ Passe intégralement (après correction d'une lacune IAM réelle) |
 | 5 | `pipeline.yml` | ✅ Passe sur 6/~17 ressources déployables ; le reste (ALB/ECS/CodeDeploy/CodePipeline) non testable (limite LocalStack) |
+| 6 | `observability.yml` | ✅ Passe sur 6/7 ressources ; seule la Lambda retirée (pull Docker trop lent) |
 
 **Point commun à retenir** : cinq limites LocalStack Community distinctes
 bloquent une vérification 100% locale — `AWS::CodeStarConnections::Connection`

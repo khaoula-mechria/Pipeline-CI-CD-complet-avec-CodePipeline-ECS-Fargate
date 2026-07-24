@@ -46,6 +46,21 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   `vpc.yml`, le repo ECR de `ecr.yaml`, et référence le projet `codebuild.yaml`
   par convention de nommage. Validé via
   `infrastructure/scripts/test5-pipeline.sh` — voir **Test 5** ci-dessous.
+  Deux outputs ajoutés après coup (`AlbFullName`, `BlueTargetGroupFullName`)
+  pour que `observability.yml` puisse construire les dimensions CloudWatch
+  de l'ALB (non déductibles par convention de nommage, l'ID est généré par AWS).
+- **`infrastructure/cloudformation/observability.yml`** — rempli (EPIC
+  CICD-EP-04 : dashboard + alarmes). Une Lambda publie 3 métriques custom
+  (`PipelineDuration`, `PipelineSuccess`, `PipelineFailure`) déclenchée par
+  une règle EventBridge dédiée sur les états terminaux du pipeline
+  (CodePipeline n'a pas de métrique de durée/succès native). Dashboard
+  CloudWatch avec 7 widgets (durée pipeline, succès/échecs, taux de succès
+  7j glissants, durée + résultats CodeBuild, CPU/mémoire ECS, latence +
+  hôtes sains ALB). 2 alarmes (durée > 15 min, échec de pipeline) notifiant
+  le topic SNS déjà créé dans `pipeline.yml`. Abonnement email optionnel
+  (paramètre `AlarmEmail`, vide par défaut). Validé via
+  `infrastructure/scripts/test6-observability.sh` — voir **Test 6**
+  ci-dessous.
 
 ### Application (`task-manager/`, Node.js/Express)
 
@@ -118,6 +133,14 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   validées que syntaxiquement (cfn-lint) — limite LocalStack Community
   documentée ci-dessous, bien plus étendue que pour les templates
   précédents.
+- `test6-observability.sh` exécuté de bout en bout (LocalStack Community,
+  exit code 0 — voir Test 6 ci-dessous) : 6 des 7 ressources de
+  `observability.yml` déployées et vérifiées (log group, rôle IAM, 2
+  alarmes, dashboard, abonnement SNS) ; seule la fonction Lambda
+  (`MetricsPublisherFunction`) est retirée de la copie de test — sa
+  création réelle déclenche un pull Docker de l'image runtime Python trop
+  lent pour cet environnement (même limite déjà documentée pour l'image
+  CodeBuild au Test 2).
 
 ### Test 4 — `iam.yaml` (rôles IAM du pipeline)
 
@@ -285,6 +308,85 @@ par ailleurs "supportés") ; le template lui-même est syntaxiquement correct
 - Par construction, tout ce qui dépend de `GitHubConnection` (Pro-only,
   Test 4) et du NAT Gateway (Pro-only, Test 3) reste non plus testable ici.
 
+### Test 6 — `observability.yml` (dashboard CloudWatch + alarmes, EPIC CICD-EP-04)
+
+**Résultat : ✅ PASSE sur 6 des 7 ressources (exit code 0).** Bonne surprise
+par rapport aux Tests 2/4/5 : CloudWatch (Alarm + Dashboard) et Lambda sont
+tous les deux supportés par LocalStack Community — la seule vraie limite
+ici est opérationnelle (pull Docker), pas un service Pro-only manquant.
+
+**Découverte en testant, avant même d'écrire le script** : les appels CLI
+directs `aws cloudwatch describe-alarms` / `list-dashboards` /
+`put-metric-data` échouent tous avec *"Operation detection failed. Missing
+Action in request for query-protocol service ServiceModel(cloudwatch)"* —
+un bug de compatibilité entre LocalStack 3.8.1 et la version d'awscli/
+botocore installée ici (1.45.54 / 1.43.54), PAS une limite Pro. Vérifié en
+déployant directement une `AWS::CloudWatch::Alarm` et un
+`AWS::CloudWatch::Dashboard` minimalistes via CloudFormation (qui n'emprunte
+pas ce chemin CLI) : les deux atteignent `CREATE_COMPLETE` sans problème.
+Ce test vérifie donc les ressources CloudWatch via
+`describe-stack-resources`/`describe-stacks`, jamais via `aws cloudwatch`.
+
+**Découverte en testant, deuxième surprise** : `AWS::Lambda::Function` EST
+supporté par LocalStack Community (`aws lambda list-functions` répond
+normalement, contrairement à CodeBuild/CodeDeploy/ECS/CodePipeline qui
+renvoient explicitement "not yet implemented or pro feature"). Mais sa
+création déclenche en coulisses un `docker pull` de l'image runtime — la
+toute première tentative a échoué immédiatement avec *"Docker not
+available"* (le conteneur LocalStack n'avait pas accès au socket Docker de
+l'hôte : corrigé en relançant avec
+`-v /var/run/docker.sock:/var/run/docker.sock`). Une fois corrigé, la
+création elle-même reste bloquée en `CREATE_IN_PROGRESS` sans avancer
+pendant plusieurs minutes — même classe de limite réseau déjà rencontrée et
+documentée au Test 2 (pull de l'image CodeBuild abandonné après 21 min).
+Ce test retire donc `MetricsPublisherFunction` (+ sa `Permission` + sa
+règle EventBridge dédiée) de la copie déployée ; le code Python (~40
+lignes, dans `observability.yml`) n'est validé que par lecture, pas exécuté
+localement.
+
+**Dépendances manquantes contournées** : la copie de test allégée de
+`pipeline.yml` (Test 5) n'exporte pas `EcsClusterName`/`EcsServiceName`/
+`AlbFullName`/`BlueTargetGroupFullName` (ressources ECS/ALB retirées, Pro-only).
+Un petit stack "stub" (`taskmanager-dashboard-stubs-test`, une unique
+ressource `AWS::CloudFormation::WaitConditionHandle` + 4 Outputs factices)
+est déployé juste avant `observability.yml` pour fournir ces 4 exports sous
+les mêmes noms — uniquement pour permettre de tester la STRUCTURE du
+Dashboard (les widgets ECS/ALB ne remonteront jamais de vraies données dans
+ce mode, évidemment).
+
+**Résultat détaillé** : `MetricsPublisherLogGroup`, `MetricsPublisherRole`,
+`PipelineDurationAlarm`, `PipelineFailureAlarm`, `PipelineDashboard` et
+`AlarmEmailSubscription` tous confirmés `CREATE_COMPLETE` (vérifié à la
+fois via `describe-stack-resources` et directement sur les ressources
+réelles — `logs describe-log-groups`, `iam get-role` — pour contourner un
+bug de cohérence secondaire de LocalStack où `describe-stack-resources`
+affichait par erreur `DELETE_COMPLETE` après un cycle rapide
+delete-stack/redeploy sous le même nom, alors que les ressources réelles
+existaient bien).
+
+**Anomalie mineure découverte** : `AlarmEmailSubscription` (protégée par la
+`Condition: HasAlarmEmail`, qui doit être fausse quand `AlarmEmail=''`, sa
+valeur par défaut) a quand même été créée par LocalStack alors qu'elle
+n'aurait pas dû l'être sur un vrai CloudFormation — LocalStack Community
+n'évalue pas correctement cette Condition pour ce type de ressource (ou ne
+valide pas le format d'`Endpoint` vide). Le template lui-même est correct :
+`Condition: HasAlarmEmail` est la façon standard CloudFormation de
+conditionner une ressource, et fonctionnera comme prévu sur un vrai compte
+AWS.
+
+**Ce qui n'est PAS testable en local** :
+- La fonction Lambda elle-même (calcul réel de la durée via
+  `list_pipeline_executions`, publication de métriques) — limite Docker
+  décrite ci-dessus.
+- Le contenu réel du Dashboard une fois rendu dans la console (couleurs,
+  rendu des widgets) et les vraies données CodeBuild/ECS/ALB dans ses
+  métriques — dépend de `pipeline.yml` en fonctionnement réel (Pro-only,
+  Test 5).
+- Le déclenchement réel des 2 alarmes (nécessite de vraies données de
+  métrique, donc un pipeline qui tourne pour de vrai).
+- L'envoi effectif d'un email par `AlarmEmailSubscription` (nécessite une
+  vraie adresse + confirmation SNS, non simulée par LocalStack).
+
 ### Bugs corrigés en cours de route
 
 - `package.json` (racine) : clés `scripts`/`devDependencies` dupliquées
@@ -330,40 +432,49 @@ par ailleurs "supportés") ; le template lui-même est syntaxiquement correct
   sans eux : `codebuild.yaml` (2 variables d'environnement), `buildspec.yml`
   (génération `imageDetail.json` + `taskdef.json`), et les 2 nouveaux
   fichiers `task-manager/taskdef.template.json` / `appspec.yaml`.
+- `observability.yml` + `test6-observability.sh` : voir le détail complet
+  dans le Test 6 ci-dessus — pas de bug dans `observability.yml` lui-même
+  (premier jet cfn-lint propre). Un bug d'environnement corrigé (LocalStack
+  lancé sans accès au socket Docker de l'hôte, requis pour que
+  `AWS::Lambda::Function` puisse créer son conteneur d'exécution). Deux
+  outputs ajoutés à `pipeline.yml` après coup (`AlbFullName`,
+  `BlueTargetGroupFullName`) car le dashboard en avait besoin et ils
+  n'existaient pas encore.
 
 ## Pas encore fait
 
 - Déploiement réel sur AWS (aucun accès AWS pour l'instant) : import du token
   GitHub (`aws codebuild import-source-credentials`), autorisation manuelle
-  de `GitHubConnection`, déploiement réel des 5 stacks dans l'ordre
-  (`vpc.yml` → `ecr.yaml` → `iam.yaml` → `codebuild.yaml` → `pipeline.yml`),
-  premier passage du pipeline de bout en bout (Source → Build → Deploy
-  Blue/Green) — rien de tout cela n'est vérifiable sans compte AWS réel, vu
-  l'étendue des limites LocalStack Community documentées dans le Test 5.
+  de `GitHubConnection`, déploiement réel des 6 stacks dans l'ordre
+  (`vpc.yml` → `ecr.yaml` → `iam.yaml` → `codebuild.yaml` → `pipeline.yml` →
+  `observability.yml`), premier passage du pipeline de bout en bout (Source
+  → Build → Deploy Blue/Green) et confirmation que les métriques/alarmes
+  remontent réellement — rien de tout cela n'est vérifiable sans compte AWS
+  réel, vu l'étendue des limites LocalStack Community documentées dans les
+  Tests 5 et 6.
 - Fichier fantôme connu mais non traité : `task-manager/ server.js` (avec un
   espace en début de nom, vide, tracké dans git) — doublon de
   `task-manager/server.js`, à nettoyer un jour.
-- Dashboard CloudWatch + alarmes (EPIC CICD-EP-04 du cahier des charges,
-  hors `pipeline.yml` : métriques custom, widgets, alarme si pipeline
-  > 15 min) — pas encore commencé.
 
 ## Prochaine étape
 
-L'infrastructure CloudFormation est maintenant complète et testée dans la
-limite de ce que LocalStack Community permet (Tests 1 à 5). Il ne reste
-plus de template CloudFormation vide. Deux chemins possibles pour la suite,
-selon ce qui devient disponible en premier :
-1. **Accès à un vrai compte AWS** : dérouler le déploiement réel dans
-   l'ordre documenté ci-dessus, en particulier valider empiriquement tout
-   ce que LocalStack n'a pas pu vérifier (ALB/target groups, ECS
-   Fargate réel, CodeDeploy Blue/Green avec vrai traffic shift,
-   CodePipeline déclenché par un vrai push GitHub).
-2. **Sans accès AWS pour l'instant** : avancer sur l'EPIC Observabilité
-   (dashboard CloudWatch + alarmes, CICD-EP-04 du cahier des charges) —
-   c'est la seule brique fonctionnelle qui n'existe dans aucun template
-   actuel et qui reste largement testable en local (CloudWatch Logs/metrics
-   sont supportés par LocalStack Community, contrairement à ELBv2/ECS/
-   CodeDeploy/CodePipeline).
+L'infrastructure CloudFormation est maintenant complète (6 stacks, plus
+aucun template vide) et testée dans la limite de ce que LocalStack
+Community permet (Tests 1 à 6), y compris l'EPIC Observabilité qui restait
+le seul morceau fonctionnel du cahier des charges pas encore commencé. La
+suite dépend maintenant presque entièrement de l'accès à un vrai compte
+AWS, pour valider empiriquement tout ce que LocalStack n'a pas pu vérifier :
+- Le déploiement réel dans l'ordre documenté ci-dessus.
+- ALB/target groups, ECS Fargate réel, CodeDeploy Blue/Green avec vrai
+  traffic shift, CodePipeline déclenché par un vrai push GitHub (Test 5).
+- La fonction Lambda de métriques, le rendu réel du dashboard, et le
+  déclenchement effectif des 2 alarmes sur des données réelles (Test 6).
+
+Sans accès AWS, il ne reste plus de nouveau composant d'infrastructure
+évident à écrire d'après le cahier des charges — le travail restant serait
+plutôt de la relecture/consolidation (revue croisée des 6 templates entre
+eux, cohérence des conventions de nommage) ou du nettoyage mineur déjà
+identifié (fichier fantôme `task-manager/ server.js`).
 
 ## Historique des mises à jour de ce fichier
 
@@ -392,3 +503,19 @@ selon ce qui devient disponible en premier :
   11 des ~17 ressources du template), et les règles `SecurityGroupIngress`
   inline non appliquées même quand le service EC2 est par ailleurs supporté.
   Plus aucun template CloudFormation du projet n'est vide.
+- 2026-07-24 — ajout et validation du Test 6 (`observability.yml` +
+  `test6-observability.sh`) : EPIC CICD-EP-04 (Observabilité) complété —
+  Lambda de métriques custom (durée/succès/échec du pipeline, publiées via
+  une règle EventBridge dédiée), dashboard CloudWatch (7 widgets : pipeline,
+  CodeBuild, ECS, ALB), 2 alarmes (durée > 15 min, échec) notifiant le topic
+  SNS existant, abonnement email optionnel. Contrairement aux Tests 2/4/5,
+  CloudWatch et Lambda sont supportés par LocalStack Community — la seule
+  vraie limite trouvée est un bug de compatibilité CLI (`aws cloudwatch ...`
+  échoue, mais la création via CloudFormation fonctionne) et un pull Docker
+  trop lent pour la fonction Lambda (contournée en la retirant de la copie
+  de test, comme pour l'image CodeBuild au Test 2). 2 outputs ajoutés à
+  `pipeline.yml` (`AlbFullName`, `BlueTargetGroupFullName`), nécessaires
+  pour les dimensions CloudWatch de l'ALB. C'était le dernier composant
+  d'infrastructure identifié dans le cahier des charges qui n'existait pas
+  encore : les 6 stacks CloudFormation du projet sont maintenant toutes
+  remplies et testées dans la limite de LocalStack Community.

@@ -582,6 +582,27 @@ Outputs:
     Export:
       Name: !Sub '${ProjectName}-${Environment}-alb-dns'
 
+  AlbFullName:
+    Description: >
+      Nom "full name" de l'ALB (format arn: 'app/nom/id-généré-par-AWS') —
+      requis comme dimension CloudWatch (namespace AWS/ApplicationELB) par
+      la stack d'observabilité, qui ne peut PAS le reconstruire par
+      convention de nommage (l'ID est généré par AWS, pas prévisible).
+    Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alb-full-name'
+
+  BlueTargetGroupFullName:
+    Description: >
+      Nom "full name" du target group Blue — même besoin que AlbFullName,
+      pour la dimension TargetGroup des métriques CloudWatch (HealthyHostCount).
+      Limitation connue : puisque Blue/Green alterne lequel des deux target
+      groups sert le trafic prod, ce widget ne reflète pas toujours le
+      target group "actif" — acceptable pour un tableau de bord de dev/staging.
+    Value: !GetAtt BlueTargetGroup.TargetGroupFullName
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-tg-blue-full-name'
+
   EcsClusterName:
     Description: Nom du cluster ECS Fargate
     Value: !Ref EcsCluster
