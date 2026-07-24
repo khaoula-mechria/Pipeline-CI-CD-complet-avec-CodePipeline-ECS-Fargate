@@ -20,3 +20,15 @@ Automatiser le cycle de livraison d’une application conteneurisée :
 4. Déploiement automatique sur ECS Fargate  
 
 ---
+
+## 📐 Documentation & diagrammes d'architecture
+
+Voir [`infrastructure/README.md`](infrastructure/README.md) pour la
+documentation complète de l'infrastructure : architecture AWS globale, flux
+de déploiement, flux du pipeline CodePipeline, rôles IAM, réseau (VPC), et
+déploiement Blue/Green — chacun avec un diagramme et une explication.
+
+L'avancement du projet (ce qui est fait, testé, prochaine étape) est suivi
+dans [`so-far.md`](so-far.md).
+
+---
