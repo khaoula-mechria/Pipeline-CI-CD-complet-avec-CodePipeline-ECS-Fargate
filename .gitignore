@@ -1,3 +1,10 @@
 # Ignore all node_modules directories
 node_modules/
 **/node_modules/
+
+# Artefacts de test générés par Jest (coverage HTML/JSON/lcov, rapport JUnit)
+# — régénérés à chaque `npm test`, ne doivent pas être versionnés.
+coverage/
+**/coverage/
+reports/
+**/reports/
