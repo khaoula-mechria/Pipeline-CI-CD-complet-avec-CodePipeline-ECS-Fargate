@@ -20,6 +20,13 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   minimal restreint au repo ECR importé depuis `ecr.yaml`. Validé sans accès
   AWS via `infrastructure/scripts/test2-codebuild.sh` — voir **Test 2** dans
   le même README.
+- **`infrastructure/cloudformation/vpc.yml`** — VPC 2 AZ, 2 subnets publics +
+  2 privés, Internet Gateway, NAT Gateway(s) (stratégie `single`/`ha`
+  paramétrable), VPC Endpoint Gateway S3, Flow Logs optionnels. Validé via
+  `infrastructure/scripts/test3-vpc.sh` (cfn-lint + LocalStack) : VPC,
+  subnets, Internet Gateway, route tables et VPC Endpoint S3 se créent tous
+  correctement. Le NAT Gateway ne peut pas être validé en local — limite
+  LocalStack Community documentée ci-dessous, pas un problème du template.
 
 ### Application (`task-manager/`, Node.js/Express)
 
@@ -37,7 +44,7 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
 
 ### Tests locaux exécutés et confirmés (sans accès AWS)
 
-- `cfn-lint` sur `ecr.yaml` et `codebuild.yaml` → passent sans erreur.
+- `cfn-lint` sur `ecr.yaml`, `codebuild.yaml` et `vpc.yml` → passent sans erreur.
 - `npm ci` + `npm test` → 2 tests unitaires passent, 100% de couverture.
 - `docker build` + `docker run` + `curl /health` → image construite,
   conteneur répond `200 {"status":"ok"}`.
@@ -49,6 +56,16 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   layers) — le comportement est documenté par raisonnement technique
   (comportement standard d'`aws ecr get-login-password` sans credentials),
   pas encore vérifié empiriquement ici.
+- `test3-vpc.sh` exécuté de bout en bout (LocalStack Community, exit code 0) :
+  VPC + 4 subnets (2 publics/2 privés, bonnes CIDR/AZ) + Internet Gateway +
+  4 route tables (1 principale implicite + 1 publique + 2 privées) + VPC
+  Endpoint S3 confirmés créés via `aws ec2 describe-*`. Le déploiement
+  échoue ensuite sur `NatGateway1` (`InvalidAllocationID.NotFound`) : l'EIP
+  associée est acceptée par CloudFormation mais LocalStack Community ne
+  l'émule pas réellement côté EC2 (`describe-addresses` renvoie une liste
+  vide, `AllocationId` reste `"unknown"`) — confirmé empiriquement, ce n'est
+  pas un défaut du template `vpc.yml`. Les outputs de la stack ne sont donc
+  pas disponibles en local (stack jamais `CREATE_COMPLETE`).
 
 ### Bugs corrigés en cours de route
 
@@ -60,11 +77,27 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
 - `task-manager/` sans `package.json`/`package-lock.json` propre → ajoutés
   (sans quoi `docker build` échouait dès `npm ci`).
 - `.gitignore` : ajout de `node_modules/` (absent auparavant).
+- `test3-vpc.sh` (ajouté par l'utilisateur avec `vpc.yml`) : chemin du
+  template pointait vers `vpc.yaml` (inexistant, le fichier réel est
+  `vpc.yml`) → corrigé. Démarrage LocalStack fragile (image `latest` non
+  épinglée, simple `sleep 8` sans attente active) → aligné sur le pattern
+  robuste de `test-local.sh` (image `3.8.1` épinglée déjà en cache,
+  attente active sur `/_localstack/health`, services `ec2,iam,logs,
+  cloudformation` explicites). Déploiement + étapes de vérification
+  faisaient échouer tout le script à la première erreur (le NAT Gateway
+  échoue toujours en local, cf. ci-dessus) → rendu non bloquant, avec
+  récupération du `VpcId` via tag EC2 plutôt que les Outputs (indisponibles
+  tant que la stack n'est pas `CREATE_COMPLETE`) et suppression automatique
+  d'une éventuelle stack `CREATE_FAILED` d'un run précédent avant de
+  redéployer.
 
 ## Pas encore fait
 
-- **`infrastructure/cloudformation/vpc.yml`** — vide (placeholder).
-- **`infrastructure/cloudformation/iam.yml`** — vide (placeholder).
+- **`infrastructure/cloudformation/iam.yml`** — vide (placeholder). À noter :
+  ce fichier apparaît actuellement comme supprimé côté git avec un nouveau
+  fichier non suivi `iam.yaml` à la place (même contenu vide) — probablement
+  un renommage fait hors de git ailleurs ; à vérifier/`git add`/`git rm` en
+  conséquence avant de commencer à le remplir.
 - **`infrastructure/cloudformation/pipeline.yml`** — vide (placeholder,
   CodePipeline + déploiement ECS Fargate).
 - Déploiement réel sur AWS (aucun accès AWS pour l'instant) : import du token
@@ -76,6 +109,20 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   espace en début de nom, vide, tracké dans git) — doublon de
   `task-manager/server.js`, à nettoyer un jour.
 
+## Prochaine étape
+
+Ordre de dépendance logique de ce qui reste : **IAM (`iam.yml`/`.yaml`)
+avant `pipeline.yml`**, car CodePipeline et les tâches ECS Fargate ont
+besoin de rôles IAM (task execution role, task role, rôle CodePipeline) qui
+n'existent pas encore. Une fois l'IAM en place, `pipeline.yml` peut
+importer les exports de `vpc.yml` (subnets, VPC id), `ecr.yaml` (repo) et
+`codebuild.yaml` (projet build) pour assembler CodePipeline + le service
+ECS Fargate (+ ALB si pas déjà prévu ailleurs).
+
 ## Historique des mises à jour de ce fichier
 
 - 2026-07-23 — création initiale, après l'ajout du Test 2 (CodeBuild local).
+- 2026-07-23 — ajout et validation du Test 3 (`vpc.yml` + `test3-vpc.sh`) :
+  bugs corrigés dans le script de test (chemin de fichier, démarrage
+  LocalStack, non-blocage sur l'échec attendu du NAT Gateway) ; `vpc.yml`
+  lui-même n'a nécessité aucune correction.
