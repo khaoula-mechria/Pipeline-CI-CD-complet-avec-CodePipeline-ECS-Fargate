@@ -1,5 +1,13 @@
 # Tester l'infrastructure sans accès AWS
 
+> **Pour tout valider d'un coup** : `./test7-all-local.sh` enchaîne les 6
+> tests (`test-local.sh`, `test2-codebuild.sh`, `test3-vpc.sh`,
+> `test4-iam.sh`, `test5-pipeline.sh`, `test6-observability.sh`) dans le bon
+> ordre et affiche un rapport récapitulatif (statut + durée) à la fin —
+> ~10 min. Voir [`testing-output.md`](testing-output.md) pour le résultat
+> détaillé de chaque test, y compris ce qui n'est pas vérifiable en local
+> et pourquoi.
+
 Deux niveaux de test, du plus léger au plus complet.
 
 ## Niveau 1 — cfn-lint (recommandé au quotidien)

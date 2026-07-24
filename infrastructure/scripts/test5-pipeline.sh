@@ -167,6 +167,13 @@ with open(dst, "w") as f:
 print(f"Template temporaire écrit dans {dst}")
 PYEOF
 
+# Si test3-vpc.sh (ou ce script) a tourné avant sous le même nom de stack,
+# elle est très probablement en CREATE_FAILED/ROLLBACK_COMPLETE (NAT Gateway
+# — cf. test3-vpc.sh) : un 'deploy' ne peut pas mettre à jour une stack dans
+# cet état. On repart propre, comme le fait déjà test3-vpc.sh.
+aws --endpoint-url=$ENDPOINT cloudformation delete-stack --stack-name $STACK_VPC 2>/dev/null || true
+aws --endpoint-url=$ENDPOINT cloudformation wait stack-delete-complete --stack-name $STACK_VPC 2>/dev/null || true
+
 aws --endpoint-url=$ENDPOINT cloudformation deploy \
   --template-file "$TMP_VPC" \
   --stack-name $STACK_VPC \

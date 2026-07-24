@@ -5,8 +5,18 @@ set -euo pipefail
 # Test local de codebuild.yaml + buildspec.yml (application task-manager)
 # Fonctionne SANS accès au vrai compte AWS.
 #
+# SKIP_BUILDSPEC_REPLAY=true saute l'étape 2 (clone git + docker pull d'une
+# image CodeBuild officielle de plusieurs Go) : sur le réseau contraint de
+# certains environnements, ce pull est trop lent pour être attendu (déjà
+# documenté : abandonné après 21 min lors du premier essai). L'étape 1
+# (cfn-lint + tests unitaires + build Docker + healthcheck) couvre déjà,
+# sans AWS, les deux critères qui comptent — voir test7-all-local.sh, qui
+# active ce mode par défaut pour un run global rapide.
+#
 # Prérequis : Docker installé et lancé, Node.js/npm, cfn-lint, git, curl.
 # ============================================================================
+
+SKIP_BUILDSPEC_REPLAY="${SKIP_BUILDSPEC_REPLAY:-false}"
 
 cd "$(dirname "$0")"
 ROOT_DIR="$(cd ../.. && pwd)"
@@ -67,6 +77,15 @@ cleanup_container
 trap - EXIT
 echo ""
 
+if [ "$SKIP_BUILDSPEC_REPLAY" = "true" ]; then
+  echo "──────────────────────────────────────────────"
+  echo "2) Rejeu de buildspec.yml — SAUTÉ (SKIP_BUILDSPEC_REPLAY=true)"
+  echo "──────────────────────────────────────────────"
+  echo "ℹ️  Étape volontairement sautée (clone git + docker pull de plusieurs Go,"
+  echo "   trop lent pour un run global). Voir test2-codebuild.sh sans cette"
+  echo "   variable pour l'exécuter."
+  echo ""
+else
 echo "──────────────────────────────────────────────"
 echo "2) Rejeu de buildspec.yml via l'agent CodeBuild officiel"
 echo "   (aws-codebuild-docker-images, 100% local, aucun compte AWS)"
@@ -112,6 +131,7 @@ if [ "$BUILD_EXIT_CODE" -ne 0 ]; then
 else
   echo "✅ Rejeu complet de buildspec.yml réussi (cas rare : credentials AWS détectées)."
 fi
+fi
 
 echo ""
 echo "──────────────────────────────────────────────"
@@ -119,6 +139,10 @@ echo "Résumé"
 echo "──────────────────────────────────────────────"
 echo "✅ codebuild.yaml valide (cfn-lint)"
 echo "✅ Tests unitaires + image Docker + /health validés sans AWS (étape 1)"
-echo "ℹ️  Ordonnancement des phases buildspec.yml rejoué (étape 2) — le blocage à la"
-echo "   connexion ECR est normal sans compte AWS ; 'build'/'post_build' ne seront"
-echo "   exercés en pratique que par la vraie CI une fois déployée (voir README)."
+if [ "$SKIP_BUILDSPEC_REPLAY" = "true" ]; then
+  echo "ℹ️  Rejeu buildspec.yml (étape 2) sauté (SKIP_BUILDSPEC_REPLAY=true)."
+else
+  echo "ℹ️  Ordonnancement des phases buildspec.yml rejoué (étape 2) — le blocage à la"
+  echo "   connexion ECR est normal sans compte AWS ; 'build'/'post_build' ne seront"
+  echo "   exercés en pratique que par la vraie CI une fois déployée (voir README)."
+fi

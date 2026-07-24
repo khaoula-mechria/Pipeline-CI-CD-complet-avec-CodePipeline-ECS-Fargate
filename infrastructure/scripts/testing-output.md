@@ -1,9 +1,12 @@
 # Résultats des tests locaux (`infrastructure/scripts/`)
 
-> Snapshot d'exécution réelle des 6 scripts de test, dans l'ordre où ils
-> doivent être lancés. Chaque section indique : ce que le script teste, s'il
-> passe ou non, et — pour tout ce qui ne peut pas être vérifié sans un vrai
-> compte AWS — pourquoi, précisément.
+> Snapshot d'exécution réelle des 7 scripts de test. Les Tests 1 à 6 valident
+> chacun un template individuellement ; le Test 7 (`test7-all-local.sh`) les
+> enchaîne tous en une seule commande avec un rapport récapitulatif — c'est
+> désormais la façon RECOMMANDÉE de valider toute l'infrastructure d'un coup.
+> Chaque section indique : ce que le script teste, s'il passe ou non, et —
+> pour tout ce qui ne peut pas être vérifié sans un vrai compte AWS —
+> pourquoi, précisément.
 >
 > Environnement d'exécution : cfn-lint 1.53.1, Docker + LocalStack Community
 > `3.8.1`, Node.js/npm (voir `package.json`), aucun accès AWS réel.
@@ -284,6 +287,54 @@ est la syntaxe CloudFormation standard et fonctionnera comme prévu sur AWS rée
 
 ---
 
+## `test7-all-local.sh` — Test 7 : orchestrateur des Tests 1 à 6
+
+**Résultat : ✅ PASSE intégralement — les 6 tests enchaînés en une seule
+commande, exit code 0 pour chacun, 597s au total (~10 min).**
+
+| Test | Statut | Durée |
+|---|---|---|
+| Test 1 — `ecr.yaml` | ✅ PASS | 35s |
+| Test 2 — `codebuild.yaml` + `buildspec.yml` | ✅ PASS | 76s |
+| Test 3 — `vpc.yml` | ✅ PASS | 36s |
+| Test 4 — `iam.yaml` | ✅ PASS | 96s |
+| Test 5 — `pipeline.yml` | ✅ PASS | 162s |
+| Test 6 — `observability.yml` | ✅ PASS | 192s |
+
+Ce script n'ajoute aucune logique de validation propre — il exécute les 6
+scripts existants dans l'ordre de dépendance du projet et agrège leurs
+résultats dans un rapport final (statut + durée par test, logs détaillés
+par test dans un répertoire temporaire dédié). Il ne s'arrête pas au
+premier échec : les 6 tests tournent jusqu'au bout à chaque exécution, pour
+obtenir un diagnostic complet en une seule commande plutôt que de devoir
+relancer après chaque correction.
+
+**Deux bugs réels trouvés en écrivant ce script** — invisibles quand chaque
+test tournait seul, révélés uniquement par l'enchaînement :
+
+1. **Collision de nom de stack.** `test3-vpc.sh` déploie le vrai `vpc.yml`
+   sous `taskmanager-vpc-test`, qui finit toujours en
+   `CREATE_FAILED`/`ROLLBACK_COMPLETE` (NAT Gateway, limite déjà connue).
+   `test5-pipeline.sh` déploie ensuite sa propre copie allégée du même
+   template sous le MÊME nom de stack — mais `cloudformation deploy` ne
+   peut pas mettre à jour une stack dans cet état. `test3-vpc.sh` gérait
+   déjà ce cas pour lui-même (delete-stack défensif avant son propre
+   déploiement) mais pas pour le script suivant dans la chaîne. **Corrigé**
+   en ajoutant le même delete-stack défensif dans `test5-pipeline.sh`.
+2. **Étape trop lente pour un run global.** L'étape 2 de `test2-codebuild.sh`
+   (clone git + `docker pull` d'une image de plusieurs Go) est la même
+   limite déjà documentée au Test 2 — inchangée en soi, mais inacceptable
+   comme étape par défaut d'un orchestrateur censé tout valider rapidement.
+   **Corrigé** en ajoutant une variable d'environnement
+   `SKIP_BUILDSPEC_REPLAY` (défaut `false`, donc sans impact sur un
+   lancement individuel de `test2-codebuild.sh`) ; `test7-all-local.sh`
+   l'active systématiquement.
+
+**Non testable en local :** exactement la même liste que chacun des Tests 1
+à 6 pris séparément — ce script agrège, il n'élargit pas la couverture.
+
+---
+
 ## Résumé global
 
 | Test | Fichier testé | Statut |
@@ -294,6 +345,7 @@ est la syntaxe CloudFormation standard et fonctionnera comme prévu sur AWS rée
 | 4 | `iam.yaml` | ✅ Passe intégralement (après correction d'une lacune IAM réelle) |
 | 5 | `pipeline.yml` | ✅ Passe sur 6/~17 ressources déployables ; le reste (ALB/ECS/CodeDeploy/CodePipeline) non testable (limite LocalStack) |
 | 6 | `observability.yml` | ✅ Passe sur 6/7 ressources ; seule la Lambda retirée (pull Docker trop lent) |
+| 7 | Orchestrateur (Tests 1-6) | ✅ Passe intégralement — 6/6 PASS en une seule commande, 597s |
 
 **Point commun à retenir** : cinq limites LocalStack Community distinctes
 bloquent une vérification 100% locale — `AWS::CodeStarConnections::Connection`

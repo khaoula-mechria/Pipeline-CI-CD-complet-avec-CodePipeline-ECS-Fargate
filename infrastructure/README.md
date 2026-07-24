@@ -377,11 +377,12 @@ sans action manuelle (critère US-03 du cahier des charges).
 Chaque diagramme correspond à un ou plusieurs fichiers CloudFormation
 listés en tête de ce document. Les scripts `infrastructure/scripts/test*.sh`
 valident chacun une partie de cette architecture sans accès AWS (via
-LocalStack) — voir [`scripts/testing-output.md`](scripts/testing-output.md)
-pour le détail complet, résultat par résultat, y compris ce qui n'a pas pu
-être vérifié localement (services Pro-only sur LocalStack Community :
-CodeStar Connections, CodeBuild, ELBv2, ECS, CodeDeploy, CodePipeline) et
-pourquoi.
+LocalStack) — `./scripts/test7-all-local.sh` les enchaîne tous en une seule
+commande (~10 min) avec un rapport récapitulatif. Voir
+[`scripts/testing-output.md`](scripts/testing-output.md) pour le détail
+complet, résultat par résultat, y compris ce qui n'a pas pu être vérifié
+localement (services Pro-only sur LocalStack Community : CodeStar
+Connections, CodeBuild, ELBv2, ECS, CodeDeploy, CodePipeline) et pourquoi.
 
 L'avancement global du projet (ce qui est fait, testé, et la prochaine
 étape) est suivi dans [`so-far.md`](../so-far.md) à la racine du dépôt.
