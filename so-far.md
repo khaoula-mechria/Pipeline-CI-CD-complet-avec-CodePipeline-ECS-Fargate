@@ -62,6 +62,15 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   `infrastructure/scripts/test6-observability.sh` — voir **Test 6**
   ci-dessous.
 
+### Outillage de test (`infrastructure/scripts/`)
+
+- **`test7-all-local.sh`** — exécute les 6 tests (Tests 1 à 6) en une seule
+  commande et affiche un rapport récapitulatif (statut + durée par test,
+  logs détaillés dans un répertoire temporaire). Auparavant, chaque
+  template se validait uniquement individuellement. Voir **Test 7**
+  ci-dessous pour le détail et les deux corrections que sa mise en place a
+  révélées dans les scripts existants.
+
 ### Application (`task-manager/`, Node.js/Express)
 
 - `src/app.js` + `server.js` — API minimale (`/health`, `/api/tasks`).
@@ -141,6 +150,10 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   création réelle déclenche un pull Docker de l'image runtime Python trop
   lent pour cet environnement (même limite déjà documentée pour l'image
   CodeBuild au Test 2).
+- `test7-all-local.sh` exécuté de bout en bout (LocalStack Community, exit
+  code 0) : les 6 tests enchaînés en une seule commande, tous PASS, 597s au
+  total (~10 min) — voir Test 7 ci-dessous pour le détail et les deux
+  corrections que sa mise en place a révélées.
 
 ### Test 4 — `iam.yaml` (rôles IAM du pipeline)
 
@@ -387,6 +400,63 @@ AWS.
 - L'envoi effectif d'un email par `AlarmEmailSubscription` (nécessite une
   vraie adresse + confirmation SNS, non simulée par LocalStack).
 
+### Test 7 — `test7-all-local.sh` (orchestrateur des 6 tests)
+
+**Contexte** : jusqu'ici, valider toute l'infrastructure demandait de
+lancer 6 scripts à la main, dans le bon ordre, en se souvenant lequel
+importe quoi. `test7-all-local.sh` enchaîne les Tests 1 à 6 dans l'ordre de
+dépendance du projet, en une seule commande, et affiche un rapport
+récapitulatif (statut + durée par test) à la fin. Il n'ajoute AUCUNE
+logique de validation propre — il orchestre les 6 scripts existants tels
+quels et agrège leurs résultats.
+
+**Deux problèmes réels révélés en l'écrivant** (pas des limites LocalStack,
+de vrais bugs de script, invisibles tant que chaque test tournait seul) :
+
+1. **Collision de nom de stack entre Test 3 et Test 5.** `test3-vpc.sh`
+   déploie le VRAI `vpc.yml` sous le nom `taskmanager-vpc-test` ; comme le
+   NAT Gateway y échoue toujours (limite déjà connue), cette stack finit
+   systématiquement en `CREATE_FAILED`/`ROLLBACK_COMPLETE`. `test5-pipeline.sh`
+   déploie ENSUITE sa propre copie allégée de `vpc.yml` (sans NAT) sous le
+   **même nom de stack**, pour obtenir de vrais exports VpcId/subnet-ids —
+   mais un `cloudformation deploy` ne peut pas mettre à jour une stack dans
+   cet état, il faut d'abord la supprimer. `test3-vpc.sh` le fait déjà pour
+   lui-même (voir son commentaire "Une stack déjà en CREATE_FAILED... bloque
+   tout nouveau deploy") mais ne le fait pas pour le bénéfice du script
+   suivant. **Corrigé** : ajout du même `delete-stack`/`wait
+   stack-delete-complete` défensif dans `test5-pipeline.sh`, juste avant son
+   propre déploiement de `vpc.yml` — invisible quand `test5-pipeline.sh`
+   tourne seul (la stack n'existe pas encore ou est déjà dans le bon état),
+   mais bloquant en enchaînement sans ce correctif.
+2. **`test2-codebuild.sh` beaucoup trop lent pour un run global.** Son étape
+   2 (clone `aws/aws-codebuild-docker-images` + `docker pull` d'une image
+   de plusieurs Go) est la même limite déjà documentée au Test 2 (abandonnée
+   après 21 min lors du tout premier essai) — inchangée en soi, mais
+   inacceptable comme étape par défaut d'un script censé tout valider
+   rapidement. **Corrigé** : ajout d'une variable d'environnement
+   `SKIP_BUILDSPEC_REPLAY` (défaut `false`, comportement inchangé pour un
+   lancement individuel de `test2-codebuild.sh`) ; `test7-all-local.sh`
+   l'exporte à `true`, l'étape 1 (cfn-lint + tests unitaires + build Docker
+   + healthcheck) restant seule suffisante pour valider sans AWS.
+
+**Résultat de l'exécution complète** : les 6 tests passent (exit code 0
+pour chacun), 597 secondes au total (~10 min), aucune erreur cachée dans
+les logs détaillés. Table récapitulative :
+
+| Test | Statut | Durée |
+|---|---|---|
+| Test 1 — `ecr.yaml` | ✅ PASS | 35s |
+| Test 2 — `codebuild.yaml` + `buildspec.yml` | ✅ PASS | 76s |
+| Test 3 — `vpc.yml` | ✅ PASS | 36s |
+| Test 4 — `iam.yaml` | ✅ PASS | 96s |
+| Test 5 — `pipeline.yml` | ✅ PASS | 162s |
+| Test 6 — `observability.yml` | ✅ PASS | 192s |
+
+**Ce qui n'est PAS testable en local** : exactement la même liste que dans
+chacun des Tests 1 à 6 pris individuellement (`test7-all-local.sh` n'élargit
+ni ne réduit la couverture — il ne fait qu'agréger). Voir
+`infrastructure/scripts/testing-output.md` pour le détail complet.
+
 ### Bugs corrigés en cours de route
 
 - `package.json` (racine) : clés `scripts`/`devDependencies` dupliquées
@@ -440,6 +510,15 @@ AWS.
   outputs ajoutés à `pipeline.yml` après coup (`AlbFullName`,
   `BlueTargetGroupFullName`) car le dashboard en avait besoin et ils
   n'existaient pas encore.
+- `test7-all-local.sh` : voir le détail complet dans le Test 7 ci-dessus —
+  deux bugs réels trouvés en enchaînant les 6 scripts (invisibles quand
+  chacun tourne seul) : collision de nom de stack `taskmanager-vpc-test`
+  entre `test3-vpc.sh` et `test5-pipeline.sh` (corrigé par un
+  `delete-stack` défensif ajouté à `test5-pipeline.sh`, avant son propre
+  déploiement de `vpc.yml`), et l'étape 2 de `test2-codebuild.sh` (pull
+  Docker de plusieurs Go) beaucoup trop lente pour un run global (corrigé
+  par une variable `SKIP_BUILDSPEC_REPLAY`, activée uniquement par
+  `test7-all-local.sh`).
 
 ## Pas encore fait
 
@@ -460,10 +539,12 @@ AWS.
 
 L'infrastructure CloudFormation est maintenant complète (6 stacks, plus
 aucun template vide) et testée dans la limite de ce que LocalStack
-Community permet (Tests 1 à 6), y compris l'EPIC Observabilité qui restait
-le seul morceau fonctionnel du cahier des charges pas encore commencé. La
-suite dépend maintenant presque entièrement de l'accès à un vrai compte
-AWS, pour valider empiriquement tout ce que LocalStack n'a pas pu vérifier :
+Community permet, via une seule commande (`test7-all-local.sh`, Tests 1 à
+6 enchaînés). L'EPIC Observabilité, qui restait le seul morceau
+fonctionnel du cahier des charges pas encore commencé, est maintenant
+couvert. La suite dépend maintenant presque entièrement de l'accès à un
+vrai compte AWS, pour valider empiriquement tout ce que LocalStack n'a pas
+pu vérifier :
 - Le déploiement réel dans l'ordre documenté ci-dessus.
 - ALB/target groups, ECS Fargate réel, CodeDeploy Blue/Green avec vrai
   traffic shift, CodePipeline déclenché par un vrai push GitHub (Test 5).
@@ -519,3 +600,14 @@ identifié (fichier fantôme `task-manager/ server.js`).
   d'infrastructure identifié dans le cahier des charges qui n'existait pas
   encore : les 6 stacks CloudFormation du projet sont maintenant toutes
   remplies et testées dans la limite de LocalStack Community.
+- 2026-07-24 — ajout et validation du Test 7 (`test7-all-local.sh`) :
+  orchestrateur qui enchaîne les Tests 1 à 6 en une seule commande avec
+  rapport récapitulatif (statut + durée), là où chaque template ne se
+  validait auparavant qu'individuellement. Deux bugs réels révélés en
+  chaînant les scripts, invisibles quand chacun tournait seul : collision
+  de nom de stack `taskmanager-vpc-test` entre `test3-vpc.sh` et
+  `test5-pipeline.sh` (corrigée par un `delete-stack` défensif ajouté à
+  `test5-pipeline.sh`), et l'étape de rejeu `buildspec.yml` de
+  `test2-codebuild.sh` beaucoup trop lente pour un run global (corrigée par
+  une nouvelle variable `SKIP_BUILDSPEC_REPLAY`). Exécution complète
+  confirmée : 6/6 tests PASS, 597s au total, aucune erreur cachée.
