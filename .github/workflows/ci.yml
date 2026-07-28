@@ -27,4 +27,4 @@ jobs:
 
       - name: Check application
         run: |
-          python -m py_compile app.py
+          python -m py_compile task-manager/src/app.py
