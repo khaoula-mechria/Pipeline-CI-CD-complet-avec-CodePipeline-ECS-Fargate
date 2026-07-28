@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Service ECS Fargate pour le projet (CI/CD AWS). Extrait de pipeline.yml
+  pour suivre la structure modulaire.
+  - LaunchType FARGATE, DesiredCount configurable par paramètre.
+  - Réseau dans les subnets privés du VPC (pas d'IP publique — sortie via
+    NAT Gateway, voir vpc.yaml).
+  - Accepte le trafic UNIQUEMENT depuis l'ALB (security group dédié).
+  - DeploymentController CODE_DEPLOY : c'est CodeDeploy (pipeline.yaml), pas
+    ECS lui-même, qui pilote le traffic shift Blue/Green à chaque
+    déploiement — ECS ne fait que démarrer/arrêter les tâches.
+
+# ------------------------------------------------------------------
+# NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml) :
+#   ... 7. ecs-task-definition.yaml   8. ecs-service.yaml   <- cette stack
+#   9. pipeline.yaml   10. observability.yaml
+# ------------------------------------------------------------------
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: taskmanager
+    AllowedPattern: '^[a-z][a-z0-9-]*$'
+    Description: Doit correspondre au ProjectName des autres stacks.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Doit correspondre à l'Environment des autres stacks.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: >
+      ID du VPC. Valeur attendue : sortie VpcId de vpc.yaml. Utilisé pour
+      créer le security group du service dans le bon VPC.
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >
+      Subnets privés (2 AZ minimum) où placer les tâches Fargate.
+      Valeur attendue : sortie PrivateSubnetIds de vpc.yaml.
+
+  ContainerPort:
+    Type: Number
+    Default: 3000
+    Description: Port exposé par le conteneur. Doit correspondre à alb.yaml et ecs-task-definition.yaml.
+
+  DesiredCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    Description: Nombre de tâches Fargate désiré (haute dispo sur 2 AZ).
+
+Resources:
+
+  # ==========================================================================
+  # SECURITY GROUP DU SERVICE ECS
+  # N'accepte du trafic entrant QUE depuis le security group de l'ALB
+  # (importé de alb.yaml) — jamais directement depuis internet.
+  # ==========================================================================
+  EcsServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'ECS Service - ${ProjectName}-${Environment}'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-alb-sg-id'
+          Description: Trafic autorisé UNIQUEMENT depuis l'ALB (Blue et Green)
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================================
+  # SERVICE ECS FARGATE
+  # LoadBalancers pointe vers le target group Blue au démarrage : c'est la
+  # cible "initiale" attendue par CodeDeploy avant son premier déploiement
+  # Blue/Green (voir pipeline.yaml, CodeDeployDeploymentGroup).
+  # ==========================================================================
+  EcsService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${ProjectName}-${Environment}-service'
+      Cluster: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
+      TaskDefinition: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-ecs-taskdef-arn'
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentController:
+        Type: CODE_DEPLOY
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref EcsServiceSecurityGroup
+      LoadBalancers:
+        - ContainerName: app
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-tg-blue-arn'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+
+  EcsServiceName:
+    Description: Nom du service ECS Fargate (utilisé par pipeline.yaml / observability.yaml)
+    Value: !GetAtt EcsService.Name
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-service-name'
+
+  EcsServiceArn:
+    Description: ARN du service ECS Fargate
+    Value: !Ref EcsService
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-service-arn'
+
+  EcsServiceSecurityGroupId:
+    Description: ID du security group du service ECS
+    Value: !GetAtt EcsServiceSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-service-sg-id'

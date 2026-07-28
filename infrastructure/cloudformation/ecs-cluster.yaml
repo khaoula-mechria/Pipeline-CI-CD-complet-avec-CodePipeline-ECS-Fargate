@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Cluster ECS Fargate pour le projet (CI/CD AWS).
+  Extrait de pipeline.yml pour suivre la structure modulaire : ecs-cluster.yaml
+  ne contient QUE le cluster lui-même (aucune tâche/service ici, voir
+  ecs-task-definition.yaml et ecs-service.yaml). Container Insights activé
+  pour le monitoring CPU/Mémoire/réseau par service (visible dans le
+  dashboard CloudWatch de observability.yml).
+
+# ------------------------------------------------------------------
+# NOTE SUR L'ORDRE DE DÉPLOIEMENT :
+#   1. vpc.yaml   2. iam.yaml   3. ecr.yaml   4. codebuild.yaml
+#   5. ecs-cluster.yaml   <- cette stack
+#   6. alb.yaml   7. ecs-task-definition.yaml   8. ecs-service.yaml
+#   9. pipeline.yaml   10. observability.yaml
+# ------------------------------------------------------------------
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: taskmanager
+    AllowedPattern: '^[a-z][a-z0-9-]*$'
+    Description: Doit correspondre au ProjectName des autres stacks.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Doit correspondre à l'Environment des autres stacks.
+
+Resources:
+
+  # ==========================================================================
+  # CLUSTER ECS FARGATE
+  # Pas d'instances EC2 à gérer (Fargate = serverless) : le cluster n'est
+  # qu'un regroupement logique de services/tâches. ContainerInsights donne
+  # des métriques détaillées par service (CPU/Mémoire/réseau/stockage) en
+  # plus des métriques de base AWS/ECS déjà utilisées par le dashboard —
+  # activé explicitement car désactivé par défaut sur un nouveau cluster.
+  # ==========================================================================
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-${Environment}-cluster'
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+
+  EcsClusterName:
+    Description: Nom du cluster ECS (utilisé par ecs-service.yaml et pipeline.yaml)
+    Value: !Ref EcsCluster
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-name'
+
+  EcsClusterArn:
+    Description: ARN du cluster ECS
+    Value: !GetAtt EcsCluster.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-arn'

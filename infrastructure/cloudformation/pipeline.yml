@@ -1,23 +1,47 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  CodePipeline + CodeDeploy Blue/Green + service ECS Fargate pour le projet
-  (CI/CD AWS). Assemble en une seule stack tout ce qui reste après
-  vpc.yml / ecr.yaml / iam.yaml / codebuild.yaml :
-  - ALB + 2 target groups (Blue/Green) + 2 listeners (prod + test).
-  - Cluster ECS Fargate + Task Definition (bootstrap) + Service
-    (DeploymentController: CODE_DEPLOY, réseau dans les subnets privés).
-  - CodeDeploy Application + DeploymentGroup (Blue/Green, traffic shift
-    progressif, rollback automatique sur échec).
-  - CodePipeline (Source GitHub -> Build CodeBuild -> Deploy CodeDeployToECS).
+  CodePipeline + CodeDeploy Blue/Green pour le projet (CI/CD AWS).
+  Assemble UNIQUEMENT l'orchestration CI/CD : ALB, cluster/service/task
+  definition ECS ont été extraits dans des stacks dédiées (alb.yaml,
+  ecs-cluster.yaml, ecs-service.yaml, ecs-task-definition.yaml) pour suivre
+  une structure modulaire — cette stack les référence par Fn::ImportValue,
+  elle ne recrée rien.
   - Bucket S3 d'artefacts + topic SNS + règle EventBridge de notification.
+  - CodeDeploy Application + DeploymentGroup (Blue/Green, traffic shift
+    progressif, rollback automatique sur échec) — voir "CHOIX Blue/Green"
+    ci-dessous.
+  - CodePipeline (Source GitHub -> Build CodeBuild -> Deploy CodeDeployToECS).
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DÉPLOIEMENT (déjà documenté dans iam.yaml) :
-#   1. vpc.yaml   2. ecr.yaml   3. iam.yaml   4. codebuild.yaml
-#   5. pipeline.yaml  <- cette stack (importe les ARNs/exports des 4 stacks
-#                        précédentes ; crée elle-même l'ECS Fargate Service,
-#                        pas de ecs.yaml séparé)
+# CHOIX Blue/Green vs Rolling :
+# On utilise AWS CodeDeploy pour un déploiement Blue/Green ECS plutôt qu'un
+# déploiement rolling piloté directement par ECS (DeploymentController
+# type ECS), parce que Blue/Green apporte deux garanties qu'un rolling
+# update ECS natif n'a pas :
+#   1. Bascule de trafic contrôlée et progressive (DeploymentConfigName
+#      ECSLinear10PercentEvery1Minute) via un second listener/target group
+#      (Green), au lieu de remplacer les tâches une à une derrière le même
+#      target group.
+#   2. Rollback automatique quasi instantané (AutoRollbackConfiguration sur
+#      DEPLOYMENT_FAILURE) : si les nouvelles tâches échouent leurs health
+#      checks pendant le traffic shift, CodeDeploy réoriente 100% du trafic
+#      vers Blue (l'ancienne version) SANS jamais l'avoir coupée. Un rolling
+#      update ECS classique aurait déjà commencé à terminer les anciennes
+#      tâches à ce stade.
+# Coût : une paire de target groups (alb.yaml) + un listener de test (8080)
+# supplémentaires — acceptable pour la fiabilité gagnée sur un projet de
+# portfolio DevOps qui veut démontrer ce pattern.
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# NOTE SUR L'ORDRE DE DÉPLOIEMENT (déjà documenté dans iam.yaml/ecs-cluster.yaml) :
+#   1. vpc.yaml   2. iam.yaml   3. ecr.yaml   4. codebuild.yaml
+#   5. ecs-cluster.yaml   6. alb.yaml   7. ecs-task-definition.yaml
+#   8. ecs-service.yaml
+#   9. pipeline.yaml  <- cette stack (importe les exports des 8 stacks
+#      précédentes ; ne crée plus l'ECS Fargate Service ni l'ALB elle-même)
+#   10. observability.yaml
 #
 # PRÉREQUIS AVANT DÉPLOIEMENT RÉEL :
 #   - GitHubConnection (iam.yaml) doit être autorisée manuellement dans la
@@ -57,34 +81,6 @@ Parameters:
       couverte indépendamment par le webhook CodeBuild (codebuild.yaml,
       déclenché sur main OU develop) — pas besoin d'un second pipeline pour
       ça.
-
-  ContainerPort:
-    Type: Number
-    Default: 3000
-    Description: Port exposé par le conteneur (voir task-manager/Dockerfile EXPOSE).
-
-  ContainerCpu:
-    Type: String
-    Default: '256'
-    Description: >
-      CPU Fargate (unités). Doit correspondre à la valeur "cpu" écrite dans
-      task-manager/taskdef.template.json.
-
-  ContainerMemory:
-    Type: String
-    Default: '512'
-    Description: >
-      Mémoire Fargate (Mo). Doit correspondre à la valeur "memory" écrite
-      dans task-manager/taskdef.template.json.
-
-  DesiredCount:
-    Type: Number
-    Default: 2
-    Description: Nombre de tâches Fargate désiré (haute dispo sur 2 AZ).
-
-  HealthCheckPath:
-    Type: String
-    Default: /health
 
 Resources:
 
@@ -188,263 +184,15 @@ Resources:
           Id: PipelineNotificationsTarget
 
   # ==========================================================================
-  # SECURITY GROUPS
-  # ALB ouvert au public sur 80 (prod) et 8080 (listener de test CodeDeploy,
-  # utilisé UNIQUEMENT pendant la validation Blue/Green — jamais exposé à de
-  # vrais utilisateurs). Le service ECS n'accepte du trafic QUE depuis l'ALB.
-  # ==========================================================================
-  AlbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: !Sub 'ALB - ${ProjectName}-${Environment}'
-      VpcId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-vpc-id'
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: Trafic prod (listener principal)
-        - IpProtocol: tcp
-          FromPort: 8080
-          ToPort: 8080
-          CidrIp: 0.0.0.0/0
-          Description: >
-            Listener de test CodeDeploy (validation de la version Green
-            avant le traffic shift) — à restreindre à un CIDR interne en
-            production si l'accès public n'est pas souhaité.
-      SecurityGroupEgress:
-        - IpProtocol: '-1'
-          CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  EcsServiceSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: !Sub 'ECS Service - ${ProjectName}-${Environment}'
-      VpcId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-vpc-id'
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: !Ref ContainerPort
-          ToPort: !Ref ContainerPort
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
-          Description: Trafic autorisé UNIQUEMENT depuis l'ALB (Blue et Green)
-      SecurityGroupEgress:
-        - IpProtocol: '-1'
-          CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  # ==========================================================================
-  # APPLICATION LOAD BALANCER + 2 TARGET GROUPS (Blue/Green) + 2 LISTENERS
-  # ==========================================================================
-  ApplicationLoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Name: !Sub '${ProjectName}-${Environment}-alb'
-      Type: application
-      Scheme: internet-facing
-      Subnets: !Split
-        - ','
-        - !ImportValue
-          'Fn::Sub': '${ProjectName}-${Environment}-public-subnet-ids'
-      SecurityGroups:
-        - !Ref AlbSecurityGroup
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  BlueTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: !Sub '${ProjectName}-${Environment}-tg-blue'
-      TargetType: ip
-      Protocol: HTTP
-      Port: !Ref ContainerPort
-      VpcId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-vpc-id'
-      HealthCheckPath: !Ref HealthCheckPath
-      HealthCheckIntervalSeconds: 15
-      HealthyThresholdCount: 3
-      UnhealthyThresholdCount: 3
-      Matcher:
-        HttpCode: '200'
-      TargetGroupAttributes:
-        # Cycle Blue/Green plus rapide : pas besoin de garder les connexions
-        # ouvertes 5 min (défaut) sur un environnement dev/staging.
-        - Key: deregistration_delay.timeout_seconds
-          Value: '30'
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  GreenTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: !Sub '${ProjectName}-${Environment}-tg-green'
-      TargetType: ip
-      Protocol: HTTP
-      Port: !Ref ContainerPort
-      VpcId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-vpc-id'
-      HealthCheckPath: !Ref HealthCheckPath
-      HealthCheckIntervalSeconds: 15
-      HealthyThresholdCount: 3
-      UnhealthyThresholdCount: 3
-      Matcher:
-        HttpCode: '200'
-      TargetGroupAttributes:
-        - Key: deregistration_delay.timeout_seconds
-          Value: '30'
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  ProdListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref ApplicationLoadBalancer
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref BlueTargetGroup
-
-  TestListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref ApplicationLoadBalancer
-      Port: 8080
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref GreenTargetGroup
-
-  # ==========================================================================
-  # ECS CLUSTER + LOG GROUP + TASK DEFINITION (bootstrap) + SERVICE
-  # La Task Definition ci-dessous sert UNIQUEMENT au premier déploiement
-  # (image "latest" bootstrap). À partir du premier passage du pipeline,
-  # c'est l'action CodeDeployToECS qui enregistre les nouvelles révisions
-  # (à partir de taskdef.json + imageDetail.json produits par le build) —
-  # cette dérive est un comportement ATTENDU et documenté du pattern
-  # ECS Blue/Green (voir action-reference-ECSbluegreen.html), pas un bug.
-  # ==========================================================================
-  EcsCluster:
-    Type: AWS::ECS::Cluster
-    Properties:
-      ClusterName: !Sub '${ProjectName}-${Environment}-cluster'
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  EcsLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub '/ecs/${ProjectName}-${Environment}'
-      # Rétention 30 jours : F4 du cahier des charges.
-      RetentionInDays: 30
-
-  EcsTaskDefinition:
-    Type: AWS::ECS::TaskDefinition
-    Properties:
-      Family: !Sub '${ProjectName}-${Environment}-task'
-      NetworkMode: awsvpc
-      RequiresCompatibilities:
-        - FARGATE
-      Cpu: !Ref ContainerCpu
-      Memory: !Ref ContainerMemory
-      ExecutionRoleArn: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-ecs-execution-role-arn'
-      TaskRoleArn: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-ecs-task-role-arn'
-      ContainerDefinitions:
-        - Name: app
-          Image: !Sub
-            - '${RepoUri}:latest'
-            - RepoUri: !ImportValue
-                'Fn::Sub': '${ProjectName}-${Environment}-ecr-uri'
-          Essential: true
-          PortMappings:
-            - ContainerPort: !Ref ContainerPort
-              Protocol: tcp
-          HealthCheck:
-            Command:
-              - CMD-SHELL
-              - !Sub 'wget --no-verbose --tries=1 --spider http://localhost:${ContainerPort}${HealthCheckPath} || exit 1'
-            Interval: 30
-            Timeout: 5
-            Retries: 3
-            StartPeriod: 10
-          LogConfiguration:
-            LogDriver: awslogs
-            Options:
-              awslogs-group: !Ref EcsLogGroup
-              awslogs-region: !Ref AWS::Region
-              awslogs-stream-prefix: app
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  EcsService:
-    Type: AWS::ECS::Service
-    # Le service doit être créé APRÈS les listeners : ECS valide que l'ALB
-    # est prêt à router avant de considérer le service stable.
-    DependsOn:
-      - ProdListener
-      - TestListener
-    Properties:
-      ServiceName: !Sub '${ProjectName}-${Environment}-service'
-      Cluster: !Ref EcsCluster
-      TaskDefinition: !Ref EcsTaskDefinition
-      LaunchType: FARGATE
-      DesiredCount: !Ref DesiredCount
-      HealthCheckGracePeriodSeconds: 60
-      DeploymentController:
-        Type: CODE_DEPLOY
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: DISABLED
-          Subnets: !Split
-            - ','
-            - !ImportValue
-              'Fn::Sub': '${ProjectName}-${Environment}-private-subnet-ids'
-          SecurityGroups:
-            - !Ref EcsServiceSecurityGroup
-      LoadBalancers:
-        - ContainerName: app
-          ContainerPort: !Ref ContainerPort
-          TargetGroupArn: !Ref BlueTargetGroup
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  # ==========================================================================
   # CODEDEPLOY — APPLICATION + DEPLOYMENT GROUP (Blue/Green ECS)
   # ServiceRoleArn importé de iam.yaml (policy managée AWSCodeDeployRoleForECS,
-  # cf. CodeDeployServiceRole). DeploymentConfigName ECSLinear10PercentEvery1Minute
-  # est l'équivalent prédéfini AWS le plus proche du traffic shift F3 du
-  # cahier des charges (10 % -> 100 % en ~10 min, palier toutes les minutes) —
-  # AWS ne propose pas de config prédéfinie avec paliers 10/50/100 exacts.
+  # cf. CodeDeployServiceRole). Cluster/service ECS et target groups/listeners
+  # ALB importés des stacks dédiées (ecs-cluster.yaml, ecs-service.yaml,
+  # alb.yaml) — plus aucune ressource réseau/compute recréée ici.
+  # DeploymentConfigName ECSLinear10PercentEvery1Minute est l'équivalent
+  # prédéfini AWS le plus proche du traffic shift F3 du cahier des charges
+  # (10 % -> 100 % en ~10 min, palier toutes les minutes) — AWS ne propose
+  # pas de config prédéfinie avec paliers 10/50/100 exacts.
   # ==========================================================================
   CodeDeployApplication:
     Type: AWS::CodeDeploy::Application
@@ -473,17 +221,23 @@ Resources:
       LoadBalancerInfo:
         TargetGroupPairInfoList:
           - TargetGroups:
-              - Name: !GetAtt BlueTargetGroup.TargetGroupName
-              - Name: !GetAtt GreenTargetGroup.TargetGroupName
+              - Name: !ImportValue
+                  'Fn::Sub': '${ProjectName}-${Environment}-tg-blue-name'
+              - Name: !ImportValue
+                  'Fn::Sub': '${ProjectName}-${Environment}-tg-green-name'
             ProdTrafficRoute:
               ListenerArns:
-                - !Ref ProdListener
+                - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-prod-listener-arn'
             TestTrafficRoute:
               ListenerArns:
-                - !Ref TestListener
+                - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-test-listener-arn'
       ECSServices:
-        - ClusterName: !Ref EcsCluster
-          ServiceName: !GetAtt EcsService.Name
+        - ClusterName: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
+          ServiceName: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ecs-service-name'
       # Rollback automatique sur échec de déploiement (health checks ECS/ALB
       # qui échouent pendant le traffic shift) — critère US-03 / F3.
       AutoRollbackConfiguration:
@@ -494,9 +248,10 @@ Resources:
   # ==========================================================================
   # CODEPIPELINE — Source (GitHub) -> Build (CodeBuild) -> Deploy (CodeDeployToECS)
   # ApplicationName/DeploymentGroupName référencés en dur via convention de
-  # nommage (comme ApplicationName/ServiceName ci-dessus) plutôt que par Ref,
-  # pour rester cohérent avec le reste du fichier et éviter toute ambiguïté
-  # sur ce que Ref renvoie pour ces deux types de ressources.
+  # nommage (comme dans CodeDeployApplication/DeploymentGroup ci-dessus)
+  # plutôt que par Ref, pour rester cohérent avec le reste du fichier et
+  # éviter toute ambiguïté sur ce que Ref renvoie pour ces deux types de
+  # ressources.
   # ==========================================================================
   CodePipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -576,44 +331,40 @@ Resources:
 
 Outputs:
 
+  # Les 5 outputs ci-dessous sont des valeurs INFORMATIVES qui pointent vers
+  # des exports désormais produits par alb.yaml/ecs-cluster.yaml/
+  # ecs-service.yaml — SANS Export ici (le nom est déjà exporté par ces
+  # stacks ; CloudFormation refuse qu'un même nom d'export existe deux fois).
+  # observability.yaml importe ces mêmes noms directement depuis les
+  # nouvelles stacks : aucune modification n'y est nécessaire.
   LoadBalancerDnsName:
     Description: DNS de l'ALB (point d'entrée public de l'application)
-    Value: !GetAtt ApplicationLoadBalancer.DNSName
-    Export:
-      Name: !Sub '${ProjectName}-${Environment}-alb-dns'
+    Value: !ImportValue
+      'Fn::Sub': '${ProjectName}-${Environment}-alb-dns'
 
   AlbFullName:
     Description: >
-      Nom "full name" de l'ALB (format arn: 'app/nom/id-généré-par-AWS') —
-      requis comme dimension CloudWatch (namespace AWS/ApplicationELB) par
-      la stack d'observabilité, qui ne peut PAS le reconstruire par
-      convention de nommage (l'ID est généré par AWS, pas prévisible).
-    Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
-    Export:
-      Name: !Sub '${ProjectName}-${Environment}-alb-full-name'
+      Nom "full name" de l'ALB — requis comme dimension CloudWatch par la
+      stack d'observabilité (export d'origine : alb.yaml).
+    Value: !ImportValue
+      'Fn::Sub': '${ProjectName}-${Environment}-alb-full-name'
 
   BlueTargetGroupFullName:
     Description: >
-      Nom "full name" du target group Blue — même besoin que AlbFullName,
-      pour la dimension TargetGroup des métriques CloudWatch (HealthyHostCount).
-      Limitation connue : puisque Blue/Green alterne lequel des deux target
-      groups sert le trafic prod, ce widget ne reflète pas toujours le
-      target group "actif" — acceptable pour un tableau de bord de dev/staging.
-    Value: !GetAtt BlueTargetGroup.TargetGroupFullName
-    Export:
-      Name: !Sub '${ProjectName}-${Environment}-tg-blue-full-name'
+      Nom "full name" du target group Blue — pour observability.yaml
+      (dimension TargetGroup, HealthyHostCount ; export d'origine : alb.yaml).
+    Value: !ImportValue
+      'Fn::Sub': '${ProjectName}-${Environment}-tg-blue-full-name'
 
   EcsClusterName:
-    Description: Nom du cluster ECS Fargate
-    Value: !Ref EcsCluster
-    Export:
-      Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-name'
+    Description: "Nom du cluster ECS Fargate (export d'origine : ecs-cluster.yaml)"
+    Value: !ImportValue
+      'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
 
   EcsServiceName:
-    Description: Nom du service ECS Fargate
-    Value: !GetAtt EcsService.Name
-    Export:
-      Name: !Sub '${ProjectName}-${Environment}-ecs-service-name'
+    Description: "Nom du service ECS Fargate (export d'origine : ecs-service.yaml)"
+    Value: !ImportValue
+      'Fn::Sub': '${ProjectName}-${Environment}-ecs-service-name'
 
   CodePipelineName:
     Description: Nom du pipeline CodePipeline

@@ -33,22 +33,60 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   **Test 4** ci-dessous : les 4 rôles, leurs policies et les 4 outputs
   exportés se créent et se vérifient correctement. Une lacune réelle a été
   trouvée et corrigée avant de tester (voir "Bugs corrigés").
-- **`infrastructure/cloudformation/pipeline.yml`** — rempli. Une seule stack
-  qui assemble tout ce qui restait : bucket S3 d'artefacts + topic SNS +
-  règle EventBridge de notification (F4), 2 security groups, ALB + 2 target
-  groups (Blue/Green) + 2 listeners (prod/test), cluster ECS Fargate +
-  Task Definition (bootstrap) + Service (`DeploymentController: CODE_DEPLOY`),
+- **`infrastructure/cloudformation/pipeline.yml`** — rempli, puis **refactorisé
+  le 2026-07-27** (branche `deployment/ecs-fargate`) : l'ALB, les 2 target
+  groups Blue/Green, les 2 security groups, le cluster/task definition/
+  service ECS ont été **extraits** vers 4 nouveaux templates dédiés
+  (`ecs-cluster.yaml`, `alb.yaml`, `ecs-task-definition.yaml`,
+  `ecs-service.yaml` — voir ci-dessous) pour suivre une structure modulaire.
+  `pipeline.yml` ne contient plus que l'orchestration CI/CD : bucket S3
+  d'artefacts + topic SNS + règle EventBridge de notification (F4),
   CodeDeploy Application + DeploymentGroup (Blue/Green, traffic shift
   `ECSLinear10PercentEvery1Minute`, rollback automatique sur échec), et
   CodePipeline (Source GitHub → Build CodeBuild → Deploy CodeDeployToECS).
-  Pas de `ecs.yaml` séparé : le service ECS est créé directement ici.
-  Importe les 4 rôles + la connexion GitHub de `iam.yaml`, le VPC/subnets de
-  `vpc.yml`, le repo ECR de `ecr.yaml`, et référence le projet `codebuild.yaml`
-  par convention de nommage. Validé via
-  `infrastructure/scripts/test5-pipeline.sh` — voir **Test 5** ci-dessous.
-  Deux outputs ajoutés après coup (`AlbFullName`, `BlueTargetGroupFullName`)
-  pour que `observability.yml` puisse construire les dimensions CloudWatch
-  de l'ALB (non déductibles par convention de nommage, l'ID est généré par AWS).
+  `CodeDeployDeploymentGroup` référence maintenant le cluster/service ECS et
+  les target groups/listeners ALB via `Fn::ImportValue` (plus de `!Ref`/
+  `!GetAtt` locaux). Les 5 outputs consommés par `observability.yml`
+  (`LoadBalancerDnsName`, `AlbFullName`, `BlueTargetGroupFullName`,
+  `EcsClusterName`, `EcsServiceName`) sont conservés sous forme de
+  pass-through (`Value: !ImportValue ...`, **sans** `Export` — le nom est
+  désormais exporté par les nouvelles stacks, CloudFormation refuse un même
+  nom d'export en double) : `observability.yml` n'a nécessité **aucune**
+  modification. Importe toujours les rôles + la connexion GitHub de
+  `iam.yaml`, et référence le projet `codebuild.yaml` par convention de
+  nommage.
+- **`infrastructure/cloudformation/ecs-cluster.yaml`** (nouveau, 2026-07-27) —
+  cluster ECS Fargate extrait de `pipeline.yml`, avec Container Insights
+  activé (`ClusterSettings.containerInsights: enabled` — absent avant le
+  refactor). Exporte `-ecs-cluster-name` (même nom qu'avant, aucun
+  changement en aval) et un nouveau `-ecs-cluster-arn`.
+- **`infrastructure/cloudformation/alb.yaml`** (nouveau, 2026-07-27) — ALB
+  public + 2 target groups Blue/Green + listener prod (80) + listener de
+  test CodeDeploy (8080), extraits de `pipeline.yml`. `VpcId`/
+  `PublicSubnetIds` passés en paramètres explicites (plus de `!ImportValue`
+  interne à ce template — respecte la contrainte "pas d'ID en dur", la
+  valeur réelle vient toujours des Outputs de `vpc.yml`). Ajout d'un
+  listener HTTPS conditionnel (`Condition: HasCertificate`, actif seulement
+  si le paramètre `CertificateArn` est renseigné) pour préparer HTTPS sans
+  restructurer le template plus tard. Exporte les ARN/noms des 2 target
+  groups, des 2 listeners, du security group ALB, en plus des exports déjà
+  existants (`-alb-dns`, `-alb-full-name`, `-tg-blue-full-name`).
+- **`infrastructure/cloudformation/ecs-task-definition.yaml`** (nouveau,
+  2026-07-27) — log group + Task Definition ECS extraits de `pipeline.yml`.
+  `ContainerImage` devient un paramètre explicite (vide par défaut =
+  `<RepositoryUri de ecr.yaml>:latest`, via `Condition: UseDefaultImage` —
+  ce paramètre ne compte que pour un déploiement manuel initial, le pipeline
+  écrase toujours la task definition via `taskdef.json` à chaque exécution
+  réelle). Bloc `Environment` du conteneur documenté avec un commentaire
+  explicite sur où ajouter des variables applicatives non sensibles, et où
+  NE PAS mettre de secret (renvoi vers `Secrets:` + Secrets Manager, déjà
+  prévu côté `EcsTaskExecutionRole` dans `iam.yaml`).
+- **`infrastructure/cloudformation/ecs-service.yaml`** (nouveau, 2026-07-27) —
+  security group + service ECS Fargate extraits de `pipeline.yml`.
+  `DeploymentController: CODE_DEPLOY` conservé. Le `DependsOn` sur les
+  listeners (nécessaire quand tout était dans le même template) a disparu :
+  l'ordre de déploiement entre stacks (`alb.yaml` avant `ecs-service.yaml`)
+  suffit désormais à le garantir.
 - **`infrastructure/cloudformation/observability.yml`** — rempli (EPIC
   CICD-EP-04 : dashboard + alarmes). Une Lambda publie 3 métriques custom
   (`PipelineDuration`, `PipelineSuccess`, `PipelineFailure`) déclenchée par
@@ -524,13 +562,19 @@ ni ne réduit la couverture — il ne fait qu'agréger). Voir
 
 - Déploiement réel sur AWS (aucun accès AWS pour l'instant) : import du token
   GitHub (`aws codebuild import-source-credentials`), autorisation manuelle
-  de `GitHubConnection`, déploiement réel des 6 stacks dans l'ordre
-  (`vpc.yml` → `ecr.yaml` → `iam.yaml` → `codebuild.yaml` → `pipeline.yml` →
-  `observability.yml`), premier passage du pipeline de bout en bout (Source
-  → Build → Deploy Blue/Green) et confirmation que les métriques/alarmes
-  remontent réellement — rien de tout cela n'est vérifiable sans compte AWS
-  réel, vu l'étendue des limites LocalStack Community documentées dans les
-  Tests 5 et 6.
+  de `GitHubConnection`, déploiement réel des 10 stacks dans l'ordre
+  (`vpc.yml` → `iam.yaml` → `ecr.yaml` → `codebuild.yaml` →
+  `ecs-cluster.yaml` → `alb.yaml` → `ecs-task-definition.yaml` →
+  `ecs-service.yaml` → `pipeline.yml` → `observability.yml`), premier
+  passage du pipeline de bout en bout (Source → Build → Deploy Blue/Green)
+  et confirmation que les métriques/alarmes remontent réellement — rien de
+  tout cela n'est vérifiable sans compte AWS réel, vu l'étendue des limites
+  LocalStack Community documentées dans les Tests 5 et 6.
+- Tests locaux (`test5-pipeline.sh` et consorts) pas encore mis à jour pour
+  refléter le nouveau découpage `pipeline.yml`/`ecs-cluster.yaml`/
+  `alb.yaml`/`ecs-task-definition.yaml`/`ecs-service.yaml` — les 4 nouveaux
+  templates n'ont été validés que par `cfn-lint` jusqu'ici (voir entrée
+  d'historique 2026-07-27), pas encore déployés sur LocalStack.
 - Fichier fantôme connu mais non traité : `task-manager/ server.js` (avec un
   espace en début de nom, vide, tracké dans git) — doublon de
   `task-manager/server.js`, à nettoyer un jour.
@@ -611,3 +655,20 @@ identifié (fichier fantôme `task-manager/ server.js`).
   `test2-codebuild.sh` beaucoup trop lente pour un run global (corrigée par
   une nouvelle variable `SKIP_BUILDSPEC_REPLAY`). Exécution complète
   confirmée : 6/6 tests PASS, 597s au total, aucune erreur cachée.
+- 2026-07-27 — refactor sur la branche `deployment/ecs-fargate` : extraction
+  de l'ALB, des 2 target groups Blue/Green, des security groups, et du
+  cluster/task definition/service ECS hors de `pipeline.yml`, vers 4
+  nouveaux templates dédiés (`ecs-cluster.yaml` avec Container Insights
+  activé, `alb.yaml` avec listener HTTPS conditionnel préparé pour plus
+  tard, `ecs-task-definition.yaml` avec `ContainerImage` paramétrable,
+  `ecs-service.yaml`). `pipeline.yml` ne garde que l'orchestration CI/CD
+  (bucket S3, SNS, CodeDeploy Application/DeploymentGroup, CodePipeline) et
+  référence les 4 nouvelles stacks par `Fn::ImportValue`. Les exports déjà
+  consommés par `observability.yml` ont été déplacés vers les nouvelles
+  stacks sous le MÊME nom (`-alb-full-name`, `-tg-blue-full-name`,
+  `-ecs-cluster-name`, `-ecs-service-name`) : `observability.yml` n'a requis
+  aucune modification. `iam.yaml` inchangé (déjà conforme : rôles
+  d'exécution/applicatif ECS déjà présents et commentés). Les 5 nouveaux/
+  modifiés templates passent `cfn-lint` sans erreur (seuls des warnings
+  W6001 attendus sur les outputs pass-through de `pipeline.yml`) ; pas
+  encore redéployés sur LocalStack sous ce nouveau découpage.
