@@ -21,8 +21,9 @@ Légende : ✅ Conforme · ⚠️ Partiel · ❌ Manquant
 
 ## Résumé exécutif
 
-L'infrastructure CloudFormation est **structurellement complète** (9 templates couvrant VPC, IAM, ECR,
-CodeBuild, cluster/service/task definition ECS, ALB Blue/Green, CodePipeline/CodeDeploy, observabilité) et
+L'infrastructure CloudFormation est **structurellement complète** (12 templates couvrant VPC, IAM, Secrets Manager, ECR,
+CodeBuild, cluster/service/task definition ECS, ALB Blue/Green, CodePipeline/CodeDeploy, auto scaling,
+observabilité) et
 la majorité des exigences F1/F2/F4 du cahier des charges sont couvertes.
 
 ✅ **L'incohérence applicative signalée par la première version de ce rapport est résolue** (2026-07-28) :
@@ -41,8 +42,13 @@ valeurs sont générées par AWS, injectés dans les deux task definitions. Aucu
 dans le dépôt, dans les paramètres CloudFormation ou dans les variables d'environnement CodeBuild — seuls
 des ARN y circulent.
 
-Une seule exigence du cahier des charges reste **absente de l'implémentation**, pas seulement partielle :
-l'auto-scaling ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` dans le dépôt).
+✅ **L'auto-scaling ECS sur le CPU est également en place** (2026-07-28) : `ScalableTarget` (2 à 6 tâches) et
+policy Target Tracking à 70 % de CPU, avec 2 alarmes CloudWatch et le nombre de tâches désormais visible sur
+le dashboard.
+
+**Plus aucune exigence du cahier des charges n'est totalement absente de l'implémentation.** Ce qui reste
+relève soit d'un déploiement AWS réel (le point bloquant ci-dessus), soit d'écarts mineurs listés en fin de
+document.
 
 ---
 
@@ -54,10 +60,10 @@ l'auto-scaling ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` d
 | 2 | Amazon ECS Fargate | ✅ | `ecs-cluster.yaml`, `ecs-service.yaml`, `ecs-task-definition.yaml` | `RequiresCompatibilities: FARGATE`, `DeploymentController: CODE_DEPLOY`. Jamais déployé réellement (ECS = Pro-only sur LocalStack). |
 | 3 | AWS CodeBuild | ✅ | `infrastructure/cloudformation/codebuild.yaml`, `task-manager/buildspec.yml` | Projet + rôle IAM + buildspec complet (SAST, tests, push ECR). Le rejeu local via l'agent officiel ne va jamais jusqu'au bout (pull d'image trop lent). |
 | 4 | Amazon ECR | ✅ | `infrastructure/cloudformation/ecr.yaml` | Repository privé, `ScanOnPush: true`, lifecycle policy 10 images. Testé de bout en bout sur LocalStack. |
-| 5 | AWS CloudFormation | ✅ | `infrastructure/cloudformation/*.yaml` | 9 templates non vides (`parameters.json` est vide, voir gaps). |
+| 5 | AWS CloudFormation | ✅ | `infrastructure/cloudformation/*.yaml` | 12 templates non vides (`parameters.json` est vide, voir gaps). |
 | 6 | Docker | ✅ | `task-manager/Dockerfile` | Dockerfile unique, multi-stage, non-root, `HEALTHCHECK`. Le doublon single-stage de la racine a été supprimé. Image mesurée : **48 Mo**. |
 | 7 | GitHub Actions | ✅ | `.github/workflows/ci.yml` | Exécute les mêmes quality gates que `buildspec.yml` (SAST Semgrep, tests Jest, seuil de couverture 80 %) sur la même application, publie le rapport JUnit + la couverture HTML en artefacts, et valide le build Docker + sa taille. Ne pousse rien vers AWS (rôle volontairement limité à la protection de branche). |
-| 8 | Amazon CloudWatch | ✅ | `infrastructure/cloudformation/observability.yml` | Dashboard (7 widgets) + 2 alarmes. Testé de bout en bout sur LocalStack. |
+| 8 | Amazon CloudWatch | ✅ | `infrastructure/cloudformation/observability.yml` | Dashboard (8 widgets, dont le nombre de tâches ECS) + 2 alarmes de pipeline, plus 2 alarmes d'auto scaling dans `ecs-autoscaling.yaml`. Testé de bout en bout sur LocalStack. |
 | 9 | AWS SNS | ✅ | `pipeline.yml` (topic + policy), `observability.yml` (abonnement email optionnel) | Voir nuance sur l'état « approval pending » au Tableau 5. |
 
 ---
@@ -91,7 +97,7 @@ l'auto-scaling ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` d
 | Traffic shift progressif 10% → 50% → 100% sur 10 min | ⚠️ | `pipeline.yml` (`CodeDeployDeploymentGroup`) | `DeploymentConfigName: CodeDeployDefault.ECSLinear10PercentEvery1Minute` (rampe linéaire 10%/min) utilisé comme équivalent AWS prédéfini le plus proche — le commentaire du template reconnaît lui-même qu'*« AWS ne propose pas de config prédéfinie avec paliers 10/50/100 exacts »*. Aucune `AWS::CodeDeploy::DeploymentConfig` personnalisée n'a été créée pour coller exactement au CDC. |
 | Rollback automatique en <3 min sur échec des health checks | ⚠️ | `pipeline.yml` (`AutoRollbackConfiguration: {Enabled: true, Events: [DEPLOYMENT_FAILURE]}`) | Le rollback automatique est bien configuré, mais déclenché uniquement par l'évènement `DEPLOYMENT_FAILURE` de CodeDeploy — aucune alarme CloudWatch dédiée ne pilote ce rollback, et aucun test ne démontre le délai de 3 minutes (seuls les paramètres de health check ALB — intervalle 15s, seuil 3 — donnent un ordre de grandeur théorique de ~45s pour détecter l'échec, sans preuve empirique de bout en bout). |
 | Secrets injectés via Secrets Manager, jamais en clair | ✅ | `secrets-manager.yaml`, `ecs-task-definition.yaml` (bloc `Secrets`), `taskdef.template.json` (bloc `secrets`), `iam.yaml` (`ReadAppSecrets`) | 2 secrets créés (`<projet>/<env>/db` en JSON `username`+`password`, `<projet>/<env>/api-key`), **valeurs générées par AWS** via `GenerateSecretString` : aucune donnée sensible dans le dépôt ni dans les paramètres CloudFormation. Injectés en `DB_USERNAME`/`DB_PASSWORD`/`API_KEY` dans les **deux** task definitions — la CloudFormation (bootstrap) et `taskdef.template.json` (celle réellement déployée à chaque exécution du pipeline). Seuls des **ARN** circulent (`secrets-manager.yaml` → variables d'environnement `codebuild.yaml` → `taskdef.json`) ; un ARN n'est pas une donnée sensible, et `describe-task-definition` ne renvoie jamais la valeur, contrairement au bloc `Environment`. Validé par `test8-secrets.sh`. Reste à vérifier sur un vrai compte AWS : l'injection effective par l'agent ECS (service `ecs` Pro-only sur LocalStack). |
-| Le nombre de tâches Fargate scale automatiquement selon le CPU | ❌ | — | Recherche exhaustive (`ApplicationAutoScaling`, `ScalableTarget`, `ScalingPolicy`, `AutoScaling`) : **aucune occurrence dans tout le dépôt**. `ecs-service.yaml` utilise un `DesiredCount` fixe (paramètre, défaut 2). |
+| Le nombre de tâches Fargate scale automatiquement selon le CPU | ✅ | `ecs-autoscaling.yaml` | `AWS::ApplicationAutoScaling::ScalableTarget` sur `ecs:service:DesiredCount` (2 à 6 tâches) + `ScalingPolicy` de type **Target Tracking** sur la métrique prédéfinie `ECSServiceAverageCPUUtilization`, **cible 70 %**, `DisableScaleIn: false` (l'énoncé demande « augmente ou diminue »). Cooldowns asymétriques : 60 s en scale-out, 300 s en scale-in pour éviter le battement. 2 alarmes CloudWatch d'observabilité notifient le topic SNS (CPU soutenu > 85 %, capacité max atteinte) — elles ne pilotent pas le scaling, Target Tracking gérant ses propres alarmes internes. Le dashboard affiche `RunningTaskCount` avec une annotation à 70 %, ce qui rend le scaling **visible**. Validé par `test9-autoscaling.sh` (22 vérifications structurelles). Reste à vérifier sur un vrai compte AWS : le scaling effectif sous charge. |
 
 ---
 
@@ -146,7 +152,6 @@ l'auto-scaling ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` d
 | Priorité | Sujet | Description |
 |---|---|---|
 | 🔴 Bloquant | Déploiement AWS réel | Aucune ressource n'a jamais été déployée sur un vrai compte AWS. CodeBuild, ALB, ECS, CodeDeploy et CodePipeline eux-mêmes (11 des ~17 ressources de `pipeline.yml`) ne sont validés que par `cfn-lint`, jamais exécutés. |
-| 🟠 Majeur | Auto Scaling ECS absent | Ajouter un `AWS::ApplicationAutoScaling::ScalableTarget` + `ScalingPolicy` (cible CPU) sur le service ECS. |
 | 🟡 Mineur | Traffic shift non conforme aux paliers | Créer un `AWS::CodeDeploy::DeploymentConfig` personnalisé pour coller aux paliers 10 % → 50 % → 100 % du CDC, au lieu de la rampe linéaire prédéfinie actuelle. |
 | 🟡 Mineur | Rétention CloudWatch Logs CodeBuild | Ajouter une ressource `AWS::Logs::LogGroup` avec `RetentionInDays: 30` pour le log group CodeBuild dans `codebuild.yaml`. |
 | 🟡 Mineur | Scan ECR non exploité | Ajouter une étape (buildspec ou action CodePipeline) qui lit le résultat du scan ECR (`ScanOnPush`) et bloque sur CRITICAL / notifie sur HIGH (US-05). |
@@ -212,6 +217,32 @@ Limite connue et assumée : l'application ne **lit** pas encore ces secrets (`DB
 `API_KEY` sont disponibles dans le conteneur mais inutilisés) — le store est en mémoire et il n'y a ni base
 de données ni appel à un service tiers. Le mécanisme d'injection est en place et conforme à F3 ; son usage
 suivra le besoin applicatif.
+
+**2026-07-28 — mise à jour après ajout de l'auto scaling ECS (F3).** Nouvelle stack `ecs-autoscaling.yaml` :
+`ScalableTarget` sur `ecs:service:DesiredCount` (2 à 6 tâches), `ScalingPolicy` Target Tracking sur
+`ECSServiceAverageCPUUtilization` à **70 %**, et 2 alarmes CloudWatch notifiant le topic SNS. Points de
+conception notables :
+
+| Décision | Raison |
+|---|---|
+| Target Tracking plutôt que Step Scaling | C'est l'approche recommandée par AWS et celle qui correspond littéralement à l'énoncé F3 (« cible CPU »). On fixe l'objectif, AWS calcule l'ajustement — pas de paliers à maintenir. |
+| Les 2 alarmes CloudWatch ne pilotent PAS le scaling | Target Tracking crée et gère ses **propres** alarmes internes (`TargetTracking-service/...`). Les alarmes de ce template servent à prévenir l'équipe (F4) : CPU soutenu au-delà de la cible, et surtout **capacité maximale atteinte** — le signal « l'auto scaling n'a plus de marge ». Documenté en tête du template pour éviter qu'on les câble par erreur à une policy. |
+| Cooldowns asymétriques (60 s out / 300 s in) | Réagir vite à une montée de charge, mais redescendre lentement pour éviter le battement quand la charge oscille. |
+| Aucune modification de `iam.yaml` | Application Auto Scaling utilise son rôle lié au service (`AWSServiceRoleForApplicationAutoScaling_ECSService`), créé par AWS à la première utilisation — inutile de déclarer un rôle. |
+| `DesiredCount` de `ecs-service.yaml` devient une valeur *initiale* | Dès que le `ScalableTarget` est attaché, Application Auto Scaling possède `DesiredCount`. Une mise à jour de la stack du service peut le réinitialiser transitoirement, puis l'auto scaling corrige. Comportement connu de CloudFormation + Application Auto Scaling, désormais documenté dans la description du paramètre et dans `infrastructure/README.md` plutôt que subi. |
+| `RunningTaskCount` ajouté au dashboard | Sans ça, F3 serait déclarée mais invisible. Le widget ECS montre maintenant CPU et nombre de tâches sur le même graphique, avec une annotation à 70 % : on voit la charge monter puis les tâches suivre. |
+
+Vérifications : `test9-autoscaling.sh` (nouveau, chaîné dans `test7-all-local.sh` qui passe à 8 tests) —
+**22 vérifications structurelles**, exit 0. Volontairement statique et non déployé : ni
+`application-autoscaling` ni `ecs` ne sont émulés par LocalStack Community, un déploiement échouerait pour
+des raisons d'émulation et n'apprendrait rien. Le script vérifie ce que `cfn-lint` ne voit pas — format exact
+du `ResourceId` (`service/<cluster>/<service>`), dimension scalable, absence de nom en dur, et surtout la
+**cohérence des seuils entre stacks** : seuil d'alarme strictement au-dessus de la cible (sinon l'alarme
+sonne alors que l'auto scaling fait son travail) et `MinCapacity` ≤ `DesiredCount` de `ecs-service.yaml`.
+`cfn-lint` propre sur les 12 templates ; JSON du dashboard revalidé (8 widgets).
+
+Reste à vérifier sur un vrai compte AWS : le scaling effectif sous charge, via
+`aws application-autoscaling describe-scaling-activities`.
 
 ---
 

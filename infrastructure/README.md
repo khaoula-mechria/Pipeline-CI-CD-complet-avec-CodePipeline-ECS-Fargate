@@ -6,7 +6,7 @@ accès AWS via LocalStack (`infrastructure/scripts/`, voir
 [`scripts/testing-output.md`](scripts/testing-output.md) pour les résultats
 détaillés de chaque test).
 
-## Les 11 stacks, dans l'ordre de déploiement
+## Les 12 stacks, dans l'ordre de déploiement
 
 | # | Stack | Rôle |
 |---|---|---|
@@ -20,14 +20,22 @@ détaillés de chaque test).
 | 8 | [`ecs-task-definition.yaml`](cloudformation/ecs-task-definition.yaml) | Task Definition (bootstrap) + log group applicatif + injection des secrets |
 | 9 | [`ecs-service.yaml`](cloudformation/ecs-service.yaml) | Service ECS Fargate (`DeploymentController: CODE_DEPLOY`) |
 | 10 | [`pipeline.yml`](cloudformation/pipeline.yml) | CodePipeline + CodeDeploy Blue/Green + bucket d'artefacts + notifications SNS |
-| 11 | [`observability.yml`](cloudformation/observability.yml) | Dashboard CloudWatch + alarmes + métriques custom |
+| 11 | [`ecs-autoscaling.yaml`](cloudformation/ecs-autoscaling.yaml) | Auto scaling du nombre de tâches sur le CPU (cible 70 %) + 2 alarmes |
+| 12 | [`observability.yml`](cloudformation/observability.yml) | Dashboard CloudWatch + alarmes + métriques custom |
 
-> **Ordre non négociable sur deux points.** `secrets-manager.yaml` doit précéder
-> `codebuild.yaml` (qui importe les ARN des secrets pour les injecter dans
-> `taskdef.json`) et `ecs-task-definition.yaml` (qui les importe pour son bloc
-> `Secrets`). Et dès qu'une task definition déclare des secrets, ECS refuse de
-> démarrer la tâche s'il ne peut pas les lire : la stack de secrets n'est donc
-> pas optionnelle.
+> **Ordre non négociable sur trois points.**
+> 1. `secrets-manager.yaml` doit précéder `codebuild.yaml` (qui importe les ARN
+>    des secrets pour les injecter dans `taskdef.json`) et
+>    `ecs-task-definition.yaml` (qui les importe pour son bloc `Secrets`). Dès
+>    qu'une task definition déclare des secrets, ECS refuse de démarrer la tâche
+>    s'il ne peut pas les lire : cette stack n'est donc pas optionnelle.
+> 2. `ecs-autoscaling.yaml` doit venir après `ecs-service.yaml` (son
+>    `ScalableTarget` s'attache à un service qui doit exister) **et** après
+>    `pipeline.yml` (ses alarmes notifient le topic SNS créé là-bas).
+> 3. Une fois `ecs-autoscaling.yaml` déployée, le `DesiredCount` de
+>    `ecs-service.yaml` n'est plus qu'une valeur initiale : c'est Application
+>    Auto Scaling qui en devient propriétaire. Pour changer durablement le
+>    nombre de tâches, ajuster `MinCapacity`/`MaxCapacity`.
 
 ---
 

@@ -87,6 +87,22 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   listeners (nécessaire quand tout était dans le même template) a disparu :
   l'ordre de déploiement entre stacks (`alb.yaml` avant `ecs-service.yaml`)
   suffit désormais à le garantir.
+- **`infrastructure/cloudformation/ecs-autoscaling.yaml`** (nouveau,
+  2026-07-28) — auto scaling du service ECS (F3 : « le nombre de tâches Fargate
+  scale automatiquement selon la charge CPU »). `ScalableTarget` sur
+  `ecs:service:DesiredCount` (2 à 6 tâches) + `ScalingPolicy` de type **Target
+  Tracking** sur `ECSServiceAverageCPUUtilization`, cible **70 %**, avec
+  `DisableScaleIn: false` (l'énoncé dit « augmente ou diminue »). Cooldowns
+  asymétriques assumés : 60 s en scale-out (réagir vite), 300 s en scale-in
+  (éviter le battement). Aucun rôle IAM créé : Application Auto Scaling utilise
+  son rôle lié au service, donc `iam.yaml` n'a eu besoin d'aucune modification.
+  2 alarmes CloudWatch d'**observabilité** notifiant le topic SNS existant :
+  CPU soutenu > 85 % pendant 5 min, et capacité maximale atteinte
+  (`RunningTaskCount >= MaxCapacity`, via Container Insights déjà activé sur le
+  cluster). Ces 2 alarmes ne pilotent PAS le scaling — Target Tracking gère ses
+  propres alarmes internes ; c'est documenté en tête du template pour éviter
+  qu'on les câble par erreur à une policy. Validé via
+  `infrastructure/scripts/test9-autoscaling.sh` — voir **Test 9** ci-dessous.
 - **`infrastructure/cloudformation/secrets-manager.yaml`** (nouveau,
   2026-07-28) — secrets applicatifs (F3 du cahier des charges). 2 secrets sous
   le préfixe `${ProjectName}/${Environment}/` : `db` (JSON
@@ -120,8 +136,15 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   `secrets-manager.yaml` : création des 2 secrets, génération effective des
   valeurs par AWS, structure JSON du secret DB, et présence des 4 exports.
   Chaîné dans `test7-all-local.sh`. Voir **Test 8** ci-dessous.
-- **`test7-all-local.sh`** — exécute les 7 tests (Tests 1 à 6 + Test 8) en une
-  seule commande et affiche un rapport récapitulatif (statut + durée par test,
+- **`test9-autoscaling.sh`** (nouveau, 2026-07-28) — valide
+  `ecs-autoscaling.yaml`. Validation **statique approfondie** plutôt que
+  déploiement : ni `application-autoscaling` ni `ecs` ne sont émulés par
+  LocalStack Community, un déploiement échouerait donc pour des raisons
+  d'émulation et non de template. 22 vérifications structurelles ciblées sur
+  les erreurs réellement plausibles ici. Chaîné dans `test7-all-local.sh`.
+  Voir **Test 9** ci-dessous.
+- **`test7-all-local.sh`** — exécute les 8 tests (Tests 1 à 6 + Tests 8 et 9)
+  en une seule commande et affiche un rapport récapitulatif (statut + durée,
   logs détaillés dans un répertoire temporaire). Auparavant, chaque
   template se validait uniquement individuellement. Voir **Test 7**
   ci-dessous pour le détail et les deux corrections que sa mise en place a
@@ -597,6 +620,46 @@ conteneur par l'agent ECS (service `ecs` Pro-only sur LocalStack Community, cf.
 Test 5). Elle ne pourra être vérifiée que sur un vrai compte AWS, en inspectant
 les variables d'environnement de la tâche en cours d'exécution.
 
+### Test 9 — `ecs-autoscaling.yaml` (Application Auto Scaling, F3)
+
+**Résultat : ✅ PASSE (exit code 0), 22 vérifications structurelles.**
+
+**Choix de méthode assumé** : contrairement aux Tests 1/3/4/6/8, ce test ne
+déploie rien sur LocalStack. Les 3 ressources du template dépendent de services
+non émulés par LocalStack Community (`application-autoscaling` n'existe pas, et
+les 2 alarmes importent des noms ECS + le topic SNS, or `ecs` est Pro-only —
+cf. Test 5). Un déploiement échouerait donc pour des raisons d'émulation, pas de
+template : ça n'apporterait aucune information. Le script fait à la place de la
+validation statique approfondie, en chargeant le YAML (avec un loader tolérant
+aux tags courts `!Ref`/`!Sub`/`!ImportValue`) et en vérifiant les erreurs
+réellement plausibles sur ce type de template :
+
+- `ServiceNamespace: ecs` et `ScalableDimension: ecs:service:DesiredCount` —
+  une faute ici passe `cfn-lint` mais casse le scaling à l'exécution ;
+- `ResourceId` au format exact `service/<cluster>/<service>`, construit
+  **uniquement** depuis des `Fn::ImportValue` (aucun nom en dur) ;
+- `PolicyType: TargetTrackingScaling`, métrique prédéfinie
+  `ECSServiceAverageCPUUtilization`, `DisableScaleIn: false` ;
+- la policy pointe bien vers le `ScalableTarget` de ce même template ;
+- **cohérence des seuils** : cible CPU = 70 % (valeur du CDC), seuil d'alarme
+  (85 %) *strictement au-dessus* de la cible — sinon l'alarme sonnerait alors
+  que l'auto scaling fait exactement son travail ; `MaxCapacity > MinCapacity` ;
+  cooldown de scale-in > scale-out ;
+- **cohérence inter-stacks** : `MinCapacity` (2) ≤ `DesiredCount` de
+  `ecs-service.yaml` (2), sinon Application Auto Scaling corrigerait le compte
+  dès sa première évaluation ;
+- les 2 alarmes notifient bien le topic SNS et sont en
+  `TreatMissingData: notBreaching` (un service pas encore démarré n'émet aucune
+  donnée : il ne doit pas déclencher d'alarme) ;
+- les 3 exports attendus sont présents ;
+- Container Insights est bien activé sur le cluster — sans lui, l'alarme de
+  capacité (qui lit `ECS/ContainerInsights`) resterait en `INSUFFICIENT_DATA`.
+
+**Ce qui n'est PAS testable en local** : le scaling réel. Sur un vrai compte
+AWS, il faudra générer de la charge CPU puis vérifier via
+`aws application-autoscaling describe-scaling-activities` que le nombre de
+tâches monte, puis redescend une fois la charge retombée.
+
 ### Bugs corrigés en cours de route
 
 - `package.json` (racine) : clés `scripts`/`devDependencies` dupliquées
@@ -664,11 +727,12 @@ les variables d'environnement de la tâche en cours d'exécution.
 
 - Déploiement réel sur AWS (aucun accès AWS pour l'instant) : import du token
   GitHub (`aws codebuild import-source-credentials`), autorisation manuelle
-  de `GitHubConnection`, déploiement réel des **11** stacks dans l'ordre
+  de `GitHubConnection`, déploiement réel des **12** stacks dans l'ordre
   (`vpc.yml` → `iam.yaml` → `secrets-manager.yaml` → `ecr.yaml` →
   `codebuild.yaml` → `ecs-cluster.yaml` → `alb.yaml` →
   `ecs-task-definition.yaml` → `ecs-service.yaml` → `pipeline.yml` →
-  `observability.yml`), remplacement de la valeur placeholder du secret
+  `ecs-autoscaling.yaml` → `observability.yml`), remplacement de la valeur
+  placeholder du secret
   `api-key` par la vraie clé (`aws secretsmanager put-secret-value`), premier
   passage du pipeline de bout en bout (Source → Build → Deploy Blue/Green),
   vérification que les 3 secrets arrivent bien dans les variables
@@ -681,12 +745,12 @@ les variables d'environnement de la tâche en cours d'exécution.
   `alb.yaml`/`ecs-task-definition.yaml`/`ecs-service.yaml` — les 4 nouveaux
   templates n'ont été validés que par `cfn-lint` jusqu'ici (voir entrée
   d'historique 2026-07-27), pas encore déployés sur LocalStack.
-- Les gaps de conformité listés dans `CONFORMITE_CDC.md` encore ouverts :
-  auto-scaling ECS absent (`ApplicationAutoScaling` nulle part), rétention
-  manquante sur le log group CodeBuild, scan ECR non exploité par le pipeline,
-  pas de notification spécifique « rollback completed », pas de stage
-  `ManualApproval`, traffic shift en rampe linéaire au lieu des paliers
-  10/50/100 %.
+- Les gaps de conformité listés dans `CONFORMITE_CDC.md` encore ouverts (tous
+  mineurs désormais) : rétention manquante sur le log group CodeBuild, scan ECR
+  non exploité par le pipeline, pas de notification spécifique
+  « rollback completed », pas de stage `ManualApproval`, traffic shift en rampe
+  linéaire au lieu des paliers 10/50/100 %, protection de branche GitHub à
+  activer côté réglages du dépôt.
 - L'application ne LIT encore aucun des secrets injectés (`DB_USERNAME`,
   `DB_PASSWORD`, `API_KEY` sont disponibles dans le conteneur mais inutilisés) :
   normal, le store est en mémoire et il n'y a pas encore de base de données ni
@@ -712,12 +776,13 @@ pu vérifier :
 - La fonction Lambda de métriques, le rendu réel du dashboard, et le
   déclenchement effectif des 2 alarmes sur des données réelles (Test 6).
 - L'injection réelle des secrets dans le conteneur par l'agent ECS (Test 8).
+- Le scaling réel du nombre de tâches sous charge CPU (Test 9) : à vérifier
+  avec `aws application-autoscaling describe-scaling-activities` après avoir
+  généré de la charge.
 
 Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
 `CONFORMITE_CDC.md` et faisables sans compte AWS (tous en IaC ou en code) :
 
-- Ajouter l'auto-scaling ECS (`AWS::ApplicationAutoScaling::ScalableTarget` +
-  `ScalingPolicy` sur le CPU), totalement absent du dépôt aujourd'hui.
 - Un `AWS::CodeDeploy::DeploymentConfig` personnalisé pour coller aux paliers
   10 % → 50 % → 100 % du cahier des charges (la config prédéfinie actuelle est
   une rampe linéaire).
@@ -863,3 +928,36 @@ Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
   `pipeline.yml` subsistent). L'application ne lit pas encore ces secrets
   (store en mémoire, pas de base de données) : le mécanisme d'injection est
   en place et conforme, son usage viendra avec le besoin applicatif.
+- 2026-07-28 — **Auto scaling ECS ajouté** (F3 : « le nombre de tâches Fargate
+  scale automatiquement selon la charge CPU ») : nouvelle stack
+  `ecs-autoscaling.yaml` — `ScalableTarget` sur `ecs:service:DesiredCount`
+  (2 à 6 tâches), `ScalingPolicy` **Target Tracking** sur
+  `ECSServiceAverageCPUUtilization` avec **cible 70 %**, scale-in activé,
+  cooldowns asymétriques (60 s out / 300 s in pour éviter le battement), et
+  2 alarmes CloudWatch notifiant le topic SNS existant (CPU soutenu > 85 %,
+  capacité maximale atteinte via `RunningTaskCount`). **Aucune modification de
+  `iam.yaml` nécessaire** : Application Auto Scaling utilise son rôle lié au
+  service. Target Tracking a été préféré à Step Scaling parce que c'est
+  l'approche recommandée par AWS et celle qui correspond littéralement à
+  l'énoncé (« cible CPU »).
+  Deux pièges identifiés et documentés en tête du template plutôt que subis :
+  (1) Target Tracking crée ses **propres** alarmes internes — les 2 alarmes de
+  ce template servent à prévenir l'équipe, pas à scaler, et ne doivent surtout
+  pas être câblées à une policy ; (2) le `DesiredCount` de `ecs-service.yaml`
+  n'est plus qu'une valeur **initiale** dès que le ScalableTarget est attaché —
+  une mise à jour de cette stack peut le réinitialiser transitoirement, et
+  Application Auto Scaling le corrige ensuite. La note est reprise dans la
+  description du paramètre `DesiredCount` et dans `infrastructure/README.md`.
+  Le widget ECS du dashboard affiche maintenant `RunningTaskCount` sur l'axe
+  de droite avec une annotation à 70 % : le scaling devient visible (CPU qui
+  monte → tâches qui suivent), ce qui rend l'exigence F3 observable et pas
+  seulement déclarée. Nouveau `test9-autoscaling.sh` (chaîné dans
+  `test7-all-local.sh`, qui passe de 7 à 8 tests) : ✅ exit 0, 22 vérifications
+  structurelles. Volontairement **statique** et non déployé — ni
+  `application-autoscaling` ni `ecs` ne sont émulés par LocalStack Community,
+  un déploiement échouerait pour des raisons d'émulation et n'apprendrait rien
+  (voir Test 9 pour la liste des vérifications, dont la cohérence des seuils
+  entre stacks). `cfn-lint` propre sur les 12 templates, JSON du dashboard
+  revalidé (8 widgets). Ordre de déploiement porté à 12 stacks
+  (`ecs-autoscaling.yaml` en 11ᵉ : après `ecs-service.yaml` dont elle scale le
+  service, et après `pipeline.yml` dont elle importe le topic SNS).

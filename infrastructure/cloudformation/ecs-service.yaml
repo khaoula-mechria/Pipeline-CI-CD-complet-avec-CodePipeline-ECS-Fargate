@@ -14,7 +14,11 @@ Description: >
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml) :
 #   ... 8. ecs-task-definition.yaml   9. ecs-service.yaml   <- cette stack
-#   10. pipeline.yml   11. observability.yml
+#   10. pipeline.yml   11. ecs-autoscaling.yaml   12. observability.yml
+#
+# L'auto scaling du nombre de tâches est déclaré à part, dans
+# ecs-autoscaling.yaml (déployée après pipeline.yml car ses alarmes notifient
+# le topic SNS créé là-bas) — voir la note sur DesiredCount ci-dessous.
 # ------------------------------------------------------------------
 
 Parameters:
@@ -51,7 +55,16 @@ Parameters:
     Type: Number
     Default: 2
     MinValue: 1
-    Description: Nombre de tâches Fargate désiré (haute dispo sur 2 AZ).
+    Description: >
+      Nombre de tâches Fargate au DÉMARRAGE (haute dispo sur 2 AZ).
+      ATTENTION : depuis l'ajout de ecs-autoscaling.yaml, ce n'est plus la
+      valeur qui fait autorité — c'est Application Auto Scaling qui possède
+      DesiredCount une fois son ScalableTarget attaché. Une mise à jour de
+      CETTE stack peut le remettre transitoirement à cette valeur ;
+      Application Auto Scaling le corrigera à sa prochaine évaluation (au
+      minimum MinCapacity, puis selon le CPU réel). Pour changer durablement
+      le nombre de tâches, ajuster MinCapacity/MaxCapacity dans
+      ecs-autoscaling.yaml, pas ce paramètre.
 
 Resources:
 

@@ -12,9 +12,9 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml pour la liste
-# complète des 11 stacks) :
-#   ... 9. ecs-service.yaml   10. pipeline.yml
-#   11. observability.yml  <- cette stack (importe les exports de
+# complète des 12 stacks) :
+#   ... 10. pipeline.yml   11. ecs-autoscaling.yaml
+#   12. observability.yml  <- cette stack (importe les exports de
 #      pipeline.yml : topic SNS, noms ECS, ALB/target group)
 # ------------------------------------------------------------------
 
@@ -372,13 +372,19 @@ Resources:
                 "type": "metric",
                 "x": 16, "y": 7, "width": 8, "height": 6,
                 "properties": {
-                  "title": "ECS Fargate — CPU / Mémoire (%)",
+                  "title": "ECS Fargate — CPU / Mémoire (%) et nombre de tâches",
                   "view": "timeSeries",
                   "region": "${AWS::Region}",
                   "metrics": [
                     [ "AWS/ECS", "CPUUtilization", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "CPU" } ],
-                    [ "AWS/ECS", "MemoryUtilization", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "Mémoire" } ]
-                  ]
+                    [ "AWS/ECS", "MemoryUtilization", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "Mémoire" } ],
+                    [ "ECS/ContainerInsights", "RunningTaskCount", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "Tâches en cours", "yAxis": "right" } ]
+                  ],
+                  "annotations": {
+                    "horizontal": [
+                      { "label": "Cible CPU auto scaling (70%)", "value": 70 }
+                    ]
+                  }
                 }
               },
               {

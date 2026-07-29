@@ -19,6 +19,7 @@ set -uo pipefail
 #   5. test5-pipeline.sh      (pipeline.yml)
 #   6. test6-observability.sh (observability.yml)
 #   7. test8-secrets.sh       (secrets-manager.yaml)
+#   8. test9-autoscaling.sh   (ecs-autoscaling.yaml)
 #
 # NOTE sur la numérotation : le "Test 7" est CE script lui-même (l'orchestrateur),
 # d'où le saut de 6 à 8 dans la liste ci-dessus.
@@ -47,7 +48,7 @@ set -uo pipefail
 #   contourné dans chaque test.
 #
 # - Ce script NE s'arrête PAS au premier échec (pas de 'set -e' global) :
-#   il exécute les 7 tests jusqu'au bout et rapporte tout à la fin, pour
+#   il exécute les 8 tests jusqu'au bout et rapporte tout à la fin, pour
 #   avoir une vue complète en une seule exécution plutôt que de devoir
 #   relancer après chaque correction.
 #
@@ -72,6 +73,7 @@ declare -a NAMES=(
   "Test 5 — pipeline.yml"
   "Test 6 — observability.yml"
   "Test 8 — secrets-manager.yaml"
+  "Test 9 — ecs-autoscaling.yaml"
 )
 declare -a SCRIPTS=(
   "test-local.sh"
@@ -81,6 +83,7 @@ declare -a SCRIPTS=(
   "test5-pipeline.sh"
   "test6-observability.sh"
   "test8-secrets.sh"
+  "test9-autoscaling.sh"
 )
 declare -a EXIT_CODES=()
 declare -a DURATIONS=()
@@ -144,7 +147,7 @@ echo "Logs complets : $RESULTS_DIR/"
 echo ""
 
 if [ "$OVERALL_STATUS" -eq 0 ]; then
-  echo "✅ Les 7 tests locaux sont passés (dans la limite documentée de ce que"
+  echo "✅ Les 8 tests locaux sont passés (dans la limite documentée de ce que"
   echo "   LocalStack Community peut vérifier — voir testing-output.md pour le"
   echo "   détail précis de ce qui est/n'est pas testable localement)."
 else

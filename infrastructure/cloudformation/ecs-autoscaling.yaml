@@ -1,0 +1,282 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Auto Scaling du service ECS Fargate (Application Auto Scaling) pour le projet
+  (CI/CD AWS).
+  F3 du cahier des charges : "Le nombre de taches Fargate scale automatiquement
+  selon la charge CPU (HPA-like via Application Auto Scaling)".
+  - ScalableTarget sur ecs:service:DesiredCount (min/max parametrables).
+  - ScalingPolicy de type Target Tracking sur le CPU moyen du service
+    (cible 70% par defaut).
+  - 2 alarmes CloudWatch d'OBSERVABILITE (CPU soutenu, capacite max atteinte)
+    qui notifient le topic SNS du pipeline. Elles ne pilotent PAS le scaling
+    (voir la note ci-dessous) : elles avertissent l'equipe.
+
+# ------------------------------------------------------------------
+# NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml) :
+#   ... 9. ecs-service.yaml   10. pipeline.yml
+#   11. ecs-autoscaling.yaml   <- cette stack
+#   12. observability.yml
+#
+# Doit être déployée APRÈS ecs-service.yaml (le ScalableTarget s'attache à un
+# service qui doit déjà exister) ET APRÈS pipeline.yml (les alarmes notifient
+# le topic SNS créé là-bas).
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# DEUX POINTS IMPORTANTS À COMPRENDRE AVANT DE MODIFIER CE TEMPLATE
+#
+# 1) Target Tracking crée SES PROPRES alarmes CloudWatch, invisibles ici.
+#    Application Auto Scaling gère automatiquement une paire d'alarmes
+#    (nommées "TargetTracking-service/...") pour déclencher le scale-out et le
+#    scale-in. Les 2 alarmes définies plus bas dans ce template ne servent donc
+#    PAS à scaler : elles existent pour PRÉVENIR l'équipe (F4). Ne pas les
+#    supprimer en pensant casser le scaling, et ne pas les câbler à une
+#    ScalingPolicy — ce serait redondant et source de conflits.
+#
+# 2) DesiredCount de ecs-service.yaml devient une valeur INITIALE seulement.
+#    Dès que ce ScalableTarget est attaché, c'est Application Auto Scaling qui
+#    possède DesiredCount. Une mise à jour de la stack ecs-service.yaml peut le
+#    remettre transitoirement à sa valeur de paramètre (2 par défaut) :
+#    Application Auto Scaling le corrigera à la prochaine évaluation (il
+#    applique au minimum MinCapacity, puis ajuste selon le CPU réel).
+#    C'est un comportement connu de CloudFormation + Application Auto Scaling,
+#    pas un bug de ces templates.
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# PARAMÈTRES
+# ------------------------------------------------------------------
+Parameters:
+  ProjectName:
+    Type: String
+    Default: taskmanager
+    AllowedPattern: '^[a-z][a-z0-9-]*$'
+    Description: Doit correspondre au ProjectName des autres stacks.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Doit correspondre à l'Environment des autres stacks.
+
+  MinCapacity:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    Description: >
+      Nombre minimum de tâches Fargate. Garder >= 2 pour rester réparti sur
+      2 AZ (cohérent avec le DesiredCount par défaut de ecs-service.yaml).
+
+  MaxCapacity:
+    Type: Number
+    Default: 6
+    MinValue: 1
+    Description: >
+      Nombre maximum de tâches Fargate. Plafond de coût autant que de charge :
+      6 tâches à 256 CPU / 512 Mo restent modestes.
+
+  TargetCpuUtilization:
+    Type: Number
+    Default: 70
+    MinValue: 10
+    MaxValue: 90
+    Description: >
+      Cible de CPU moyen du service, en pourcentage (F3 : 70 %). Application
+      Auto Scaling ajoute ou retire des tâches pour maintenir cette moyenne.
+
+  ScaleOutCooldown:
+    Type: Number
+    Default: 60
+    MinValue: 0
+    Description: >
+      Délai (s) avant un nouveau scale-out. Court volontairement : mieux vaut
+      réagir vite à une montée de charge.
+
+  ScaleInCooldown:
+    Type: Number
+    Default: 300
+    MinValue: 0
+    Description: >
+      Délai (s) avant un nouveau scale-in. Volontairement plus long que le
+      scale-out, pour éviter le battement (flapping) quand la charge oscille.
+
+  HighCpuAlarmThreshold:
+    Type: Number
+    Default: 85
+    MinValue: 10
+    MaxValue: 100
+    Description: >
+      Seuil (%) de l'alarme CPU d'observabilité. À garder AU-DESSUS de
+      TargetCpuUtilization : atteindre la cible est normal, la dépasser
+      largement et durablement signifie que le scaling ne suit pas.
+
+# ------------------------------------------------------------------
+# RESSOURCES
+# ------------------------------------------------------------------
+Resources:
+
+  # ==========================================================================
+  # SCALABLE TARGET — déclare CE QUI peut scaler et entre quelles bornes.
+  #
+  # Pas de RoleARN : Application Auto Scaling utilise automatiquement le rôle
+  # lié au service (AWSServiceRoleForApplicationAutoScaling_ECSService), créé
+  # par AWS à la première utilisation. C'est la raison pour laquelle iam.yaml
+  # n'a eu besoin d'AUCUNE modification pour cette fonctionnalité.
+  # ==========================================================================
+  ServiceScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ScalableDimension: 'ecs:service:DesiredCount'
+      # Format imposé par ECS : service/<nom du cluster>/<nom du service>.
+      # Les deux noms viennent des exports de ecs-cluster.yaml et
+      # ecs-service.yaml — jamais de valeur en dur.
+      ResourceId: !Sub
+        - 'service/${ClusterName}/${ServiceName}'
+        - ClusterName: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
+          ServiceName: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ecs-service-name'
+      MinCapacity: !Ref MinCapacity
+      MaxCapacity: !Ref MaxCapacity
+
+  # ==========================================================================
+  # SCALING POLICY — déclare COMMENT scaler.
+  #
+  # Target Tracking plutôt que Step Scaling : c'est l'approche recommandée par
+  # AWS et celle qui correspond littéralement à l'énoncé F3 ("cible CPU").
+  # On fixe un objectif (70 %), AWS calcule lui-même de combien de tâches
+  # ajuster — pas de paliers à maintenir à la main.
+  #
+  # ECSServiceAverageCPUUtilization est une métrique prédéfinie : elle mappe
+  # sur AWS/ECS CPUUtilization moyenné sur le service, sans avoir à déclarer
+  # les dimensions.
+  # ==========================================================================
+  CpuTargetTrackingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-ecs-cpu-target-tracking'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ServiceScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: !Ref TargetCpuUtilization
+        ScaleOutCooldown: !Ref ScaleOutCooldown
+        ScaleInCooldown: !Ref ScaleInCooldown
+        # DisableScaleIn resterait à false : on VEUT aussi réduire le nombre de
+        # tâches quand la charge baisse (l'énoncé F3 dit "augmente ou diminue").
+        DisableScaleIn: false
+
+  # ==========================================================================
+  # ALARME D'OBSERVABILITÉ 1 — CPU soutenu au-delà du seuil.
+  #
+  # Ne pilote pas le scaling (cf. note en haut du fichier). Elle signale que le
+  # CPU reste nettement au-dessus de la cible pendant 5 minutes : soit la
+  # charge monte plus vite que le scale-out, soit MaxCapacity est atteint.
+  # OKActions est renseigné pour recevoir aussi le retour à la normale.
+  # ==========================================================================
+  ServiceHighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ecs-cpu-high'
+      AlarmDescription: !Sub >-
+        CPU moyen du service ECS au-dessus de ${HighCpuAlarmThreshold}% pendant
+        5 minutes, alors que la cible d'auto scaling est
+        ${TargetCpuUtilization}%.
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
+        - Name: ServiceName
+          Value: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ecs-service-name'
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: !Ref HighCpuAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      # Un service qui ne tourne pas encore n'émet aucune donnée : ne pas
+      # déclencher l'alarme pour autant.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-pipeline-notifications-arn'
+      OKActions:
+        - !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-pipeline-notifications-arn'
+
+  # ==========================================================================
+  # ALARME D'OBSERVABILITÉ 2 — capacité maximale atteinte.
+  #
+  # C'est l'alarme opérationnellement la plus utile des deux : quand le service
+  # tourne à MaxCapacity, l'auto scaling n'a plus de marge et toute charge
+  # supplémentaire dégradera la latence. Le signal à recevoir est "il faut
+  # relever MaxCapacity (ou optimiser l'application)".
+  #
+  # RunningTaskCount vient de ECS/ContainerInsights, disponible parce que
+  # Container Insights est activé sur le cluster (ecs-cluster.yaml). Si
+  # Container Insights était désactivé, cette alarme resterait en
+  # INSUFFICIENT_DATA (rendue inoffensive par TreatMissingData: notBreaching).
+  # ==========================================================================
+  ServiceMaxCapacityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ecs-max-capacity'
+      AlarmDescription: !Sub >-
+        Le service ECS tourne à sa capacité maximale (${MaxCapacity} tâches) :
+        l'auto scaling n'a plus de marge de manoeuvre.
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
+        - Name: ServiceName
+          Value: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ecs-service-name'
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref MaxCapacity
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-pipeline-notifications-arn'
+
+# ------------------------------------------------------------------
+# OUTPUTS
+# ------------------------------------------------------------------
+Outputs:
+  ScalableTargetId:
+    Description: Identifiant du ScalableTarget (service/<cluster>/<service>)
+    Value: !Ref ServiceScalableTarget
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-scalable-target-id'
+
+  ScalingPolicyArn:
+    Description: ARN de la policy de Target Tracking sur le CPU
+    Value: !Ref CpuTargetTrackingPolicy
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-cpu-policy-arn'
+
+  CapacityRange:
+    Description: Bornes de scaling appliquées au service (min-max)
+    Value: !Sub '${MinCapacity}-${MaxCapacity}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-capacity-range'
+
+  HighCpuAlarmName:
+    Description: Nom de l'alarme CloudWatch de CPU soutenu
+    Value: !Ref ServiceHighCpuAlarm
+
+  MaxCapacityAlarmName:
+    Description: Nom de l'alarme CloudWatch de capacité maximale atteinte
+    Value: !Ref ServiceMaxCapacityAlarm

@@ -41,7 +41,10 @@ Description: >
 #   8. ecs-task-definition.yaml   9. ecs-service.yaml
 #   10. pipeline.yml  <- cette stack (importe les exports des 9 stacks
 #      précédentes ; ne crée plus l'ECS Fargate Service ni l'ALB elle-même)
-#   11. observability.yml
+#   11. ecs-autoscaling.yaml   12. observability.yml
+#
+# Le topic SNS créé ici est consommé par les alarmes de ecs-autoscaling.yaml
+# et de observability.yml — d'où leur position après cette stack.
 #
 # PRÉREQUIS AVANT DÉPLOIEMENT RÉEL :
 #   - GitHubConnection (iam.yaml) doit être autorisée manuellement dans la
