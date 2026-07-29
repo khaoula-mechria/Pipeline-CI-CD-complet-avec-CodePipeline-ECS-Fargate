@@ -9,11 +9,12 @@ Description: >
   dashboard CloudWatch de observability.yml).
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DÉPLOIEMENT :
-#   1. vpc.yaml   2. iam.yaml   3. ecr.yaml   4. codebuild.yaml
-#   5. ecs-cluster.yaml   <- cette stack
-#   6. alb.yaml   7. ecs-task-definition.yaml   8. ecs-service.yaml
-#   9. pipeline.yaml   10. observability.yaml
+# NOTE SUR L'ORDRE DE DÉPLOIEMENT (liste de référence du projet) :
+#   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
+#   5. codebuild.yaml
+#   6. ecs-cluster.yaml   <- cette stack
+#   7. alb.yaml   8. ecs-task-definition.yaml   9. ecs-service.yaml
+#   10. pipeline.yml   11. observability.yml
 # ------------------------------------------------------------------
 
 Parameters:

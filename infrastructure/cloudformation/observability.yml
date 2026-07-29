@@ -11,10 +11,11 @@ Description: >
     topic SNS déjà créé dans pipeline.yml.
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DÉPLOIEMENT :
-#   1. vpc.yaml   2. ecr.yaml   3. iam.yaml   4. codebuild.yaml
-#   5. pipeline.yaml   6. observability.yaml  <- cette stack (importe les
-#      exports de pipeline.yaml : topic SNS, noms ECS, ALB/target group)
+# NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml pour la liste
+# complète des 11 stacks) :
+#   ... 9. ecs-service.yaml   10. pipeline.yml
+#   11. observability.yml  <- cette stack (importe les exports de
+#      pipeline.yml : topic SNS, noms ECS, ALB/target group)
 # ------------------------------------------------------------------
 
 Parameters:

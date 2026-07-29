@@ -161,6 +161,24 @@ Resources:
             Value: !Ref ProjectName
           - Name: ENVIRONMENT_NAME
             Value: !Ref Environment
+          # ARN des secrets applicatifs, injectés dans taskdef.json par
+          # buildspec.yml (bloc "secrets" de la task definition).
+          #
+          # Un ARN de secret n'est PAS une donnée sensible : c'est un
+          # identifiant. F3 interdit les VALEURS de secrets en clair dans les
+          # variables d'environnement CodeBuild — c'est justement ce que ce
+          # mécanisme évite : seul l'ARN transite ici, la valeur est lue par
+          # l'agent ECS au démarrage de la tâche.
+          #
+          # Importés depuis secrets-manager.yaml car l'ARN se termine par un
+          # suffixe aléatoire de 6 caractères ajouté par AWS : impossible de
+          # le reconstruire par convention de nommage.
+          - Name: DB_SECRET_ARN
+            Value: !ImportValue
+              'Fn::Sub': '${ProjectName}-${Environment}-db-secret-arn'
+          - Name: API_KEY_SECRET_ARN
+            Value: !ImportValue
+              'Fn::Sub': '${ProjectName}-${Environment}-api-key-secret-arn'
 
       # Pas d'artefact S3 : le "livrable" du build est l'image poussée
       # vers ECR directement dans buildspec.yml (post_build).

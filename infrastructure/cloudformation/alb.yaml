@@ -12,7 +12,7 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml) :
-#   ... 5. ecs-cluster.yaml   6. alb.yaml   <- cette stack   ...
+#   ... 6. ecs-cluster.yaml   7. alb.yaml   <- cette stack   ...
 # ------------------------------------------------------------------
 
 Parameters:

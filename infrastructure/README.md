@@ -6,16 +6,28 @@ accès AWS via LocalStack (`infrastructure/scripts/`, voir
 [`scripts/testing-output.md`](scripts/testing-output.md) pour les résultats
 détaillés de chaque test).
 
-## Les 6 stacks, dans l'ordre de déploiement
+## Les 11 stacks, dans l'ordre de déploiement
 
 | # | Stack | Rôle |
 |---|---|---|
 | 1 | [`vpc.yml`](cloudformation/vpc.yml) | Réseau : VPC, subnets publics/privés, NAT Gateway(s), VPC Endpoint S3 |
-| 2 | [`ecr.yaml`](cloudformation/ecr.yaml) | Registre Docker privé (scan on push, lifecycle policy) |
-| 3 | [`iam.yaml`](cloudformation/iam.yaml) | Rôles IAM du pipeline + connexion GitHub (CodeStar Connections) |
-| 4 | [`codebuild.yaml`](cloudformation/codebuild.yaml) | Projet CodeBuild (build, tests, SAST, push ECR) |
-| 5 | [`pipeline.yml`](cloudformation/pipeline.yml) | CodePipeline + CodeDeploy Blue/Green + ALB + ECS Fargate |
-| 6 | [`observability.yml`](cloudformation/observability.yml) | Dashboard CloudWatch + alarmes + métriques custom |
+| 2 | [`iam.yaml`](cloudformation/iam.yaml) | Rôles IAM du pipeline + connexion GitHub (CodeStar Connections) |
+| 3 | [`secrets-manager.yaml`](cloudformation/secrets-manager.yaml) | Secrets applicatifs (credentials DB, clé d'API) générés par AWS |
+| 4 | [`ecr.yaml`](cloudformation/ecr.yaml) | Registre Docker privé (scan on push, lifecycle policy) |
+| 5 | [`codebuild.yaml`](cloudformation/codebuild.yaml) | Projet CodeBuild (build, tests, SAST, push ECR) |
+| 6 | [`ecs-cluster.yaml`](cloudformation/ecs-cluster.yaml) | Cluster ECS Fargate (Container Insights activé) |
+| 7 | [`alb.yaml`](cloudformation/alb.yaml) | ALB + 2 target groups Blue/Green + listeners prod (80) et test (8080) |
+| 8 | [`ecs-task-definition.yaml`](cloudformation/ecs-task-definition.yaml) | Task Definition (bootstrap) + log group applicatif + injection des secrets |
+| 9 | [`ecs-service.yaml`](cloudformation/ecs-service.yaml) | Service ECS Fargate (`DeploymentController: CODE_DEPLOY`) |
+| 10 | [`pipeline.yml`](cloudformation/pipeline.yml) | CodePipeline + CodeDeploy Blue/Green + bucket d'artefacts + notifications SNS |
+| 11 | [`observability.yml`](cloudformation/observability.yml) | Dashboard CloudWatch + alarmes + métriques custom |
+
+> **Ordre non négociable sur deux points.** `secrets-manager.yaml` doit précéder
+> `codebuild.yaml` (qui importe les ARN des secrets pour les injecter dans
+> `taskdef.json`) et `ecs-task-definition.yaml` (qui les importe pour son bloc
+> `Secrets`). Et dès qu'une task definition déclare des secrets, ECS refuse de
+> démarrer la tâche s'il ne peut pas les lire : la stack de secrets n'est donc
+> pas optionnelle.
 
 ---
 

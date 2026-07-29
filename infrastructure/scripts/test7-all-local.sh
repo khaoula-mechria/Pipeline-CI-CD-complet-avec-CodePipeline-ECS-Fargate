@@ -5,12 +5,11 @@ set -uo pipefail
 # complet en une seule exécution plutôt que de s'arrêter au premier échec.
 
 # ============================================================================
-# test7-all-local.sh — exécute TOUS les tests locaux (Tests 1 à 6) en une
-# seule commande, et affiche un rapport récapitulatif à la fin.
+# test7-all-local.sh — exécute TOUS les tests locaux en une seule commande,
+# et affiche un rapport récapitulatif à la fin.
 #
-# Jusqu'ici, chaque template (ecr/codebuild/vpc/iam/pipeline/observability)
-# se validait individuellement via son propre script (test-local.sh,
-# test2-codebuild.sh, ..., test6-observability.sh). Ce script les enchaîne
+# Jusqu'ici, chaque template se validait individuellement via son propre
+# script (test-local.sh, test2-codebuild.sh, ...). Ce script les enchaîne
 # dans l'ORDRE DE DÉPENDANCE du projet (voir infrastructure/README.md) :
 #
 #   1. test-local.sh          (ecr.yaml)
@@ -19,6 +18,10 @@ set -uo pipefail
 #   4. test4-iam.sh           (iam.yaml)
 #   5. test5-pipeline.sh      (pipeline.yml)
 #   6. test6-observability.sh (observability.yml)
+#   7. test8-secrets.sh       (secrets-manager.yaml)
+#
+# NOTE sur la numérotation : le "Test 7" est CE script lui-même (l'orchestrateur),
+# d'où le saut de 6 à 8 dans la liste ci-dessus.
 #
 # CHOIX DE CONCEPTION IMPORTANTS :
 #
@@ -44,7 +47,7 @@ set -uo pipefail
 #   contourné dans chaque test.
 #
 # - Ce script NE s'arrête PAS au premier échec (pas de 'set -e' global) :
-#   il exécute les 6 tests jusqu'au bout et rapporte tout à la fin, pour
+#   il exécute les 7 tests jusqu'au bout et rapporte tout à la fin, pour
 #   avoir une vue complète en une seule exécution plutôt que de devoir
 #   relancer après chaque correction.
 #
@@ -68,6 +71,7 @@ declare -a NAMES=(
   "Test 4 — iam.yaml"
   "Test 5 — pipeline.yml"
   "Test 6 — observability.yml"
+  "Test 8 — secrets-manager.yaml"
 )
 declare -a SCRIPTS=(
   "test-local.sh"
@@ -76,6 +80,7 @@ declare -a SCRIPTS=(
   "test4-iam.sh"
   "test5-pipeline.sh"
   "test6-observability.sh"
+  "test8-secrets.sh"
 )
 declare -a EXIT_CODES=()
 declare -a DURATIONS=()
@@ -139,7 +144,7 @@ echo "Logs complets : $RESULTS_DIR/"
 echo ""
 
 if [ "$OVERALL_STATUS" -eq 0 ]; then
-  echo "✅ Les 6 tests locaux sont passés (dans la limite documentée de ce que"
+  echo "✅ Les 7 tests locaux sont passés (dans la limite documentée de ce que"
   echo "   LocalStack Community peut vérifier — voir testing-output.md pour le"
   echo "   détail précis de ce qui est/n'est pas testable localement)."
 else

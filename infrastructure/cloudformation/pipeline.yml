@@ -36,12 +36,12 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DÉPLOIEMENT (déjà documenté dans iam.yaml/ecs-cluster.yaml) :
-#   1. vpc.yaml   2. iam.yaml   3. ecr.yaml   4. codebuild.yaml
-#   5. ecs-cluster.yaml   6. alb.yaml   7. ecs-task-definition.yaml
-#   8. ecs-service.yaml
-#   9. pipeline.yaml  <- cette stack (importe les exports des 8 stacks
+#   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
+#   5. codebuild.yaml   6. ecs-cluster.yaml   7. alb.yaml
+#   8. ecs-task-definition.yaml   9. ecs-service.yaml
+#   10. pipeline.yml  <- cette stack (importe les exports des 9 stacks
 #      précédentes ; ne crée plus l'ECS Fargate Service ni l'ALB elle-même)
-#   10. observability.yaml
+#   11. observability.yml
 #
 # PRÉREQUIS AVANT DÉPLOIEMENT RÉEL :
 #   - GitHubConnection (iam.yaml) doit être autorisée manuellement dans la

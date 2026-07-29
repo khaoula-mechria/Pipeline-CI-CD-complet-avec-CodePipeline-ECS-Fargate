@@ -13,8 +13,8 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml) :
-#   ... 7. ecs-task-definition.yaml   8. ecs-service.yaml   <- cette stack
-#   9. pipeline.yaml   10. observability.yaml
+#   ... 8. ecs-task-definition.yaml   9. ecs-service.yaml   <- cette stack
+#   10. pipeline.yml   11. observability.yml
 # ------------------------------------------------------------------
 
 Parameters:

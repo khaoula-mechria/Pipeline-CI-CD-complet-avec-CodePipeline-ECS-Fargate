@@ -14,12 +14,14 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DÉPLOIEMENT :
-#   1. vpc.yaml
-#   2. ecr.yaml
-#   3. iam.yaml       <- cette stack
-#   4. codebuild.yaml (déjà fait, indépendant de iam.yaml)
-#   5. pipeline.yaml  (importera les ARNs exportés ici)
-#   6. ecs.yaml       (importera EcsTaskExecutionRoleArn / EcsTaskRoleArn)
+#   1. vpc.yml   2. iam.yaml   <- cette stack
+#   3. secrets-manager.yaml   4. ecr.yaml   5. codebuild.yaml
+#   6. ecs-cluster.yaml   7. alb.yaml   8. ecs-task-definition.yaml
+#   9. ecs-service.yaml   10. pipeline.yml   11. observability.yml
+#
+# iam.yaml n'importe rien d'autre que l'ARN du repo ECR (statement ECR de
+# CodeBuild) et se déploie donc très tôt : la plupart des stacks suivantes
+# importent ses rôles.
 # ------------------------------------------------------------------
 
 Parameters:
@@ -248,16 +250,31 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              # Permission utilisée par l'AGENT ECS (pas par le code applicatif)
+              # pour lire les secrets déclarés dans le bloc Secrets de la task
+              # definition, au démarrage de chaque tâche. Sans elle, les tâches
+              # échouent avec ResourceInitializationError.
               - Sid: ReadAppSecrets
                 Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  # Convention de nommage : les secrets de l'app seront créés
-                  # sous ce préfixe (ex: taskmanager/dev/db-password). Pas
-                  # encore de stack Secrets Manager -> restriction par nom,
-                  # pas par ARN importé.
+                  # Restriction par préfixe de nom plutôt que par ARN importé
+                  # de secrets-manager.yaml : le wildcard couvre le suffixe
+                  # aléatoire de 6 caractères qu'AWS ajoute aux ARN de secrets,
+                  # et surtout ça garde iam.yaml sans dépendance vers la stack
+                  # de secrets — iam.yaml se déploie en 2e position, avant elle,
+                  # et beaucoup d'autres stacks importent ses rôles.
+                  # La restriction reste stricte : ce rôle ne peut lire QUE les
+                  # secrets de ce projet et de cet environnement.
                   - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/${Environment}/*'
+              # PAS de kms:Decrypt ici, volontairement : les secrets de
+              # secrets-manager.yaml utilisent la clé gérée par AWS
+              # (alias/aws/secretsmanager), pour laquelle aucune permission KMS
+              # explicite n'est requise. Si un jour un secret est chiffré avec
+              # une clé KMS gérée par le client, il FAUDRA ajouter ici un
+              # statement kms:Decrypt sur l'ARN de cette clé, sinon les tâches
+              # ECS ne démarreront plus.
       Tags:
         - Key: Project
           Value: !Ref ProjectName

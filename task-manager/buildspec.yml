@@ -97,13 +97,30 @@ phases:
       - echo "Rendu de taskdef.json à partir du template versionné (ARN des"
       - echo "rôles ECS injectés par convention de nommage, cf. iam.yaml ;"
       - echo "voir infrastructure/cloudformation/pipeline.yml pour le détail)"
+      # Les ARN de secrets viennent de secrets-manager.yaml via les variables
+      # d'environnement du projet CodeBuild (cf. codebuild.yaml) : ce sont des
+      # identifiants, jamais les valeurs des secrets (F3). Le build échoue tôt
+      # et explicitement s'ils manquent, plutôt que de produire un taskdef.json
+      # avec des placeholders non substitués qui ferait échouer le déploiement
+      # ECS bien plus loin.
+      - |
+        for VAR in DB_SECRET_ARN API_KEY_SECRET_ARN; do
+          if [ -z "$(eval echo \"\$$VAR\")" ]; then
+            echo "❌ $VAR est vide : la stack secrets-manager.yaml est-elle déployée ?"
+            exit 1
+          fi
+        done
       - |
         sed \
           -e "s|<AWS_ACCOUNT_ID>|${AWS_ACCOUNT_ID}|g" \
           -e "s|<PROJECT_NAME>|${PROJECT_NAME}|g" \
           -e "s|<ENVIRONMENT_NAME>|${ENVIRONMENT_NAME}|g" \
           -e "s|<AWS_REGION>|${AWS_DEFAULT_REGION}|g" \
+          -e "s|<DB_SECRET_ARN>|${DB_SECRET_ARN}|g" \
+          -e "s|<API_KEY_SECRET_ARN>|${API_KEY_SECRET_ARN}|g" \
           taskdef.template.json > taskdef.json
+      # Affiche le taskdef rendu : il ne contient que des ARN de secrets,
+      # aucune valeur — ce cat reste donc sûr dans les logs CodeBuild.
       - cat taskdef.json
 
 # Chemins ci-dessous : relatifs à $CODEBUILD_SRC_DIR (racine du dépôt), pas au

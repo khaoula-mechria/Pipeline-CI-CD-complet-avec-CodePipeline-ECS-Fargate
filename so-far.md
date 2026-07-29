@@ -87,6 +87,20 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   listeners (nécessaire quand tout était dans le même template) a disparu :
   l'ordre de déploiement entre stacks (`alb.yaml` avant `ecs-service.yaml`)
   suffit désormais à le garantir.
+- **`infrastructure/cloudformation/secrets-manager.yaml`** (nouveau,
+  2026-07-28) — secrets applicatifs (F3 du cahier des charges). 2 secrets sous
+  le préfixe `${ProjectName}/${Environment}/` : `db` (JSON
+  `{username, password}`) et `api-key` (valeur simple). **Aucune valeur
+  sensible dans le template** : les deux sont générés par AWS via
+  `GenerateSecretString`, jamais écrits en dur ni passés en paramètre de stack.
+  La vraie clé d'API (qui vient d'un fournisseur externe et ne peut pas être
+  générée) se pousse hors CloudFormation en une commande
+  (`aws secretsmanager put-secret-value`) ; un update ultérieur de la stack ne
+  l'écrase pas, `GenerateSecretString` ne s'appliquant qu'à la création.
+  Pas de `KmsKeyId` : la clé gérée par AWS (`alias/aws/secretsmanager`) évite
+  d'avoir à accorder `kms:Decrypt` — commenté explicitement dans `iam.yaml`
+  car ça devrait changer avec une clé gérée par le client. Validé via
+  `infrastructure/scripts/test8-secrets.sh` — voir **Test 8** ci-dessous.
 - **`infrastructure/cloudformation/observability.yml`** — rempli (EPIC
   CICD-EP-04 : dashboard + alarmes). Une Lambda publie 3 métriques custom
   (`PipelineDuration`, `PipelineSuccess`, `PipelineFailure`) déclenchée par
@@ -102,8 +116,12 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
 
 ### Outillage de test (`infrastructure/scripts/`)
 
-- **`test7-all-local.sh`** — exécute les 6 tests (Tests 1 à 6) en une seule
-  commande et affiche un rapport récapitulatif (statut + durée par test,
+- **`test8-secrets.sh`** (nouveau, 2026-07-28) — valide
+  `secrets-manager.yaml` : création des 2 secrets, génération effective des
+  valeurs par AWS, structure JSON du secret DB, et présence des 4 exports.
+  Chaîné dans `test7-all-local.sh`. Voir **Test 8** ci-dessous.
+- **`test7-all-local.sh`** — exécute les 7 tests (Tests 1 à 6 + Test 8) en une
+  seule commande et affiche un rapport récapitulatif (statut + durée par test,
   logs détaillés dans un répertoire temporaire). Auparavant, chaque
   template se validait uniquement individuellement. Voir **Test 7**
   ci-dessous pour le détail et les deux corrections que sa mise en place a
@@ -545,6 +563,40 @@ chacun des Tests 1 à 6 pris individuellement (`test7-all-local.sh` n'élargit
 ni ne réduit la couverture — il ne fait qu'agréger). Voir
 `infrastructure/scripts/testing-output.md` pour le détail complet.
 
+### Test 8 — `secrets-manager.yaml` (secrets applicatifs, F3)
+
+**Résultat : ✅ PASSE (exit code 0).** Secrets Manager est supporté par
+LocalStack Community — comme CloudWatch/Lambda au Test 6, et contrairement à
+CodeBuild/ECS/CodeDeploy/CodePipeline.
+
+Ce que le script vérifie réellement, au-delà du `cfn-lint` :
+- les 2 secrets se créent et **AWS génère bien leur valeur** — ce qui prouve
+  que rien n'a besoin d'être écrit en clair dans le dépôt ;
+- le secret DB est un JSON contenant **exactement** `username` + `password` :
+  c'est ce qui valide la syntaxe `<arn>:password::` utilisée par
+  `ecs-task-definition.yaml` et `taskdef.template.json` (une clé absente ferait
+  échouer le démarrage de la tâche ECS, pas le déploiement de la stack) ;
+- la longueur du mot de passe généré (32) et l'absence effective des caractères
+  exclus (`" @ / \`) ;
+- les **4 exports** sont présents sous les noms attendus par `codebuild.yaml` et
+  `ecs-task-definition.yaml`.
+
+Le script n'affiche jamais une valeur de secret : seulement les clés présentes,
+la longueur du mot de passe, et les ARN (qui ne sont pas des données sensibles).
+
+**Confirmé empiriquement** : l'ARN d'un secret se termine bien par un suffixe
+aléatoire de 6 caractères ajouté par AWS (`...:secret:taskmanager/dev/db-pvWiCG`).
+C'est la raison d'être de tout le câblage par exports/variables d'environnement
+plutôt que par convention de nommage : cet ARN est **impossible à reconstruire**.
+Le wildcard de la policy `ReadAppSecrets` (`.../secret:${ProjectName}/${Environment}/*`)
+le couvre correctement, et refuse bien les secrets d'un autre environnement ou
+d'un autre projet (vérifié par correspondance de motif).
+
+**Ce qui n'est PAS testable en local** : l'injection réelle des secrets dans le
+conteneur par l'agent ECS (service `ecs` Pro-only sur LocalStack Community, cf.
+Test 5). Elle ne pourra être vérifiée que sur un vrai compte AWS, en inspectant
+les variables d'environnement de la tâche en cours d'exécution.
+
 ### Bugs corrigés en cours de route
 
 - `package.json` (racine) : clés `scripts`/`devDependencies` dupliquées
@@ -612,25 +664,34 @@ ni ne réduit la couverture — il ne fait qu'agréger). Voir
 
 - Déploiement réel sur AWS (aucun accès AWS pour l'instant) : import du token
   GitHub (`aws codebuild import-source-credentials`), autorisation manuelle
-  de `GitHubConnection`, déploiement réel des 10 stacks dans l'ordre
-  (`vpc.yml` → `iam.yaml` → `ecr.yaml` → `codebuild.yaml` →
-  `ecs-cluster.yaml` → `alb.yaml` → `ecs-task-definition.yaml` →
-  `ecs-service.yaml` → `pipeline.yml` → `observability.yml`), premier
-  passage du pipeline de bout en bout (Source → Build → Deploy Blue/Green)
-  et confirmation que les métriques/alarmes remontent réellement — rien de
-  tout cela n'est vérifiable sans compte AWS réel, vu l'étendue des limites
-  LocalStack Community documentées dans les Tests 5 et 6.
+  de `GitHubConnection`, déploiement réel des **11** stacks dans l'ordre
+  (`vpc.yml` → `iam.yaml` → `secrets-manager.yaml` → `ecr.yaml` →
+  `codebuild.yaml` → `ecs-cluster.yaml` → `alb.yaml` →
+  `ecs-task-definition.yaml` → `ecs-service.yaml` → `pipeline.yml` →
+  `observability.yml`), remplacement de la valeur placeholder du secret
+  `api-key` par la vraie clé (`aws secretsmanager put-secret-value`), premier
+  passage du pipeline de bout en bout (Source → Build → Deploy Blue/Green),
+  vérification que les 3 secrets arrivent bien dans les variables
+  d'environnement de la tâche ECS, et confirmation que les métriques/alarmes
+  remontent réellement — rien de tout cela n'est vérifiable sans compte AWS
+  réel, vu l'étendue des limites LocalStack Community documentées dans les
+  Tests 5, 6 et 8.
 - Tests locaux (`test5-pipeline.sh` et consorts) pas encore mis à jour pour
   refléter le nouveau découpage `pipeline.yml`/`ecs-cluster.yaml`/
   `alb.yaml`/`ecs-task-definition.yaml`/`ecs-service.yaml` — les 4 nouveaux
   templates n'ont été validés que par `cfn-lint` jusqu'ici (voir entrée
   d'historique 2026-07-27), pas encore déployés sur LocalStack.
-- Les gaps de conformité listés dans `CONFORMITE_CDC.md` et non traités par
-  l'unification applicative : Secrets Manager non câblé (permission IAM seule,
-  aucun secret réel ni bloc `Secrets:`), auto-scaling ECS absent
-  (`ApplicationAutoScaling` nulle part), rétention manquante sur le log group
-  CodeBuild, scan ECR non exploité par le pipeline, pas de notification
-  spécifique « rollback completed », pas de stage `ManualApproval`.
+- Les gaps de conformité listés dans `CONFORMITE_CDC.md` encore ouverts :
+  auto-scaling ECS absent (`ApplicationAutoScaling` nulle part), rétention
+  manquante sur le log group CodeBuild, scan ECR non exploité par le pipeline,
+  pas de notification spécifique « rollback completed », pas de stage
+  `ManualApproval`, traffic shift en rampe linéaire au lieu des paliers
+  10/50/100 %.
+- L'application ne LIT encore aucun des secrets injectés (`DB_USERNAME`,
+  `DB_PASSWORD`, `API_KEY` sont disponibles dans le conteneur mais inutilisés) :
+  normal, le store est en mémoire et il n'y a pas encore de base de données ni
+  d'appel à un service tiers. Le mécanisme d'injection est en place et
+  conforme ; son utilisation viendra avec le besoin applicatif.
 
 (Le fichier fantôme `task-manager/ server.js` a été supprimé le 2026-07-28
 lors de l'unification applicative — cf. section Application ci-dessus.)
@@ -650,14 +711,11 @@ pu vérifier :
   traffic shift, CodePipeline déclenché par un vrai push GitHub (Test 5).
 - La fonction Lambda de métriques, le rendu réel du dashboard, et le
   déclenchement effectif des 2 alarmes sur des données réelles (Test 6).
+- L'injection réelle des secrets dans le conteneur par l'agent ECS (Test 8).
 
 Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
 `CONFORMITE_CDC.md` et faisables sans compte AWS (tous en IaC ou en code) :
 
-- Câbler Secrets Manager pour de vrai : une ressource
-  `AWS::SecretsManager::Secret` + un bloc `Secrets:` dans les **deux** task
-  definitions (`ecs-task-definition.yaml` ET `taskdef.template.json` — c'est
-  la seconde qui est réellement déployée à chaque exécution du pipeline).
 - Ajouter l'auto-scaling ECS (`AWS::ApplicationAutoScaling::ScalableTarget` +
   `ScalingPolicy` sur le CPU), totalement absent du dépôt aujourd'hui.
 - Un `AWS::CodeDeploy::DeploymentConfig` personnalisé pour coller aux paliers
@@ -772,3 +830,36 @@ Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
   applicative déjà connue (pipeline construit autour du stub Express, pas
   de l'app Flask réelle) et le fait qu'aucun déploiement AWS réel n'a
   encore eu lieu.
+- 2026-07-28 — **Secrets Manager câblé de bout en bout** (F3 du cahier des
+  charges) : nouvelle stack `secrets-manager.yaml` (2 secrets, valeurs
+  **générées par AWS** via `GenerateSecretString` — aucune donnée sensible
+  dans le dépôt, ni dans les paramètres CloudFormation), bloc `Secrets:`
+  ajouté aux **deux** task definitions (`ecs-task-definition.yaml` pour le
+  bootstrap ET `taskdef.template.json` pour tous les déploiements réels du
+  pipeline), et permissions du rôle d'exécution ECS documentées/vérifiées
+  (`secretsmanager:GetSecretValue` était déjà présent et son wildcard couvre
+  bien le suffixe aléatoire des ARN — vérifié par correspondance de motif ;
+  pas de `kms:Decrypt` nécessaire avec la clé gérée par AWS, désormais
+  explicitement commenté). Les 3 variables `DB_USERNAME`/`DB_PASSWORD`/
+  `API_KEY` arrivent dans le conteneur sans qu'aucune valeur ne transite en
+  clair : seuls des ARN circulent, de `secrets-manager.yaml` vers
+  `codebuild.yaml` (variables d'environnement) puis vers `taskdef.json`.
+  Un garde-fou a été ajouté dans `buildspec.yml` : le build échoue tôt et
+  explicitement si les ARN sont vides, au lieu de produire un `taskdef.json`
+  avec des placeholders non substitués qui casserait le déploiement ECS bien
+  plus loin. Nouveau `test8-secrets.sh` (chaîné dans `test7-all-local.sh`,
+  qui passe donc de 6 à 7 tests) : ✅ exit 0 — Secrets Manager est supporté
+  par LocalStack Community, les 2 secrets se créent, la structure JSON
+  `username`/`password` du secret DB est confirmée (c'est elle qui rend
+  valide la syntaxe `<arn>:password::`), la longueur et les caractères exclus
+  du mot de passe généré sont vérifiés, et les 4 exports attendus sont
+  présents. Au passage : les notes d'ordre de déploiement des templates
+  étaient incohérentes entre fichiers (`iam.yaml` listait encore un
+  `ecs.yaml` inexistant, `observability.yml` une liste de 6 stacks
+  pré-refactor) et le tableau de `infrastructure/README.md` annonçait
+  toujours « les 6 stacks » — tout est normalisé sur une liste de référence
+  unique de 11 stacks. `cfn-lint` propre sur les 11 templates (seuls les
+  W6001 pré-existants et attendus sur les outputs pass-through de
+  `pipeline.yml` subsistent). L'application ne lit pas encore ces secrets
+  (store en mémoire, pas de base de données) : le mécanisme d'injection est
+  en place et conforme, son usage viendra avec le besoin applicatif.

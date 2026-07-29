@@ -36,9 +36,13 @@ Il reste **un problème structurel** :
 - **Aucun déploiement AWS réel** n'a jamais eu lieu (voir `so-far.md`) : CodeBuild, CodeDeploy, ECS, ALB et
   CodePipeline eux-mêmes n'ont jamais tourné, seulement été validés syntaxiquement.
 
-Et deux exigences du cahier des charges restent **absentes de l'implémentation**, pas seulement partielles :
-l'injection de secrets via Secrets Manager (IAM seul, aucun secret ni bloc `Secrets:` réel) et l'auto-scaling
-ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` dans le dépôt).
+✅ **L'injection des secrets via Secrets Manager est également réglée** (2026-07-28) : 2 secrets dont les
+valeurs sont générées par AWS, injectés dans les deux task definitions. Aucune valeur sensible ne se trouve
+dans le dépôt, dans les paramètres CloudFormation ou dans les variables d'environnement CodeBuild — seuls
+des ARN y circulent.
+
+Une seule exigence du cahier des charges reste **absente de l'implémentation**, pas seulement partielle :
+l'auto-scaling ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` dans le dépôt).
 
 ---
 
@@ -86,7 +90,7 @@ ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` dans le dépôt)
 |---|---|---|---|
 | Traffic shift progressif 10% → 50% → 100% sur 10 min | ⚠️ | `pipeline.yml` (`CodeDeployDeploymentGroup`) | `DeploymentConfigName: CodeDeployDefault.ECSLinear10PercentEvery1Minute` (rampe linéaire 10%/min) utilisé comme équivalent AWS prédéfini le plus proche — le commentaire du template reconnaît lui-même qu'*« AWS ne propose pas de config prédéfinie avec paliers 10/50/100 exacts »*. Aucune `AWS::CodeDeploy::DeploymentConfig` personnalisée n'a été créée pour coller exactement au CDC. |
 | Rollback automatique en <3 min sur échec des health checks | ⚠️ | `pipeline.yml` (`AutoRollbackConfiguration: {Enabled: true, Events: [DEPLOYMENT_FAILURE]}`) | Le rollback automatique est bien configuré, mais déclenché uniquement par l'évènement `DEPLOYMENT_FAILURE` de CodeDeploy — aucune alarme CloudWatch dédiée ne pilote ce rollback, et aucun test ne démontre le délai de 3 minutes (seuls les paramètres de health check ALB — intervalle 15s, seuil 3 — donnent un ordre de grandeur théorique de ~45s pour détecter l'échec, sans preuve empirique de bout en bout). |
-| Secrets injectés via Secrets Manager, jamais en clair | ❌ | `iam.yaml` (permission IAM seule) | Seule une permission `secretsmanager:GetSecretValue` existe (`EcsTaskExecutionRole`, scopée par convention de nommage). **Aucune ressource `AWS::SecretsManager::Secret` n'existe dans le dépôt**, et **aucun bloc `Secrets:` n'est présent** dans `taskdef.template.json` ni `ecs-task-definition.yaml` — seules des variables d'environnement non sensibles (`PROJECT_NAME`, `NODE_ENV`) y figurent. L'intention est documentée en commentaire mais non câblée. |
+| Secrets injectés via Secrets Manager, jamais en clair | ✅ | `secrets-manager.yaml`, `ecs-task-definition.yaml` (bloc `Secrets`), `taskdef.template.json` (bloc `secrets`), `iam.yaml` (`ReadAppSecrets`) | 2 secrets créés (`<projet>/<env>/db` en JSON `username`+`password`, `<projet>/<env>/api-key`), **valeurs générées par AWS** via `GenerateSecretString` : aucune donnée sensible dans le dépôt ni dans les paramètres CloudFormation. Injectés en `DB_USERNAME`/`DB_PASSWORD`/`API_KEY` dans les **deux** task definitions — la CloudFormation (bootstrap) et `taskdef.template.json` (celle réellement déployée à chaque exécution du pipeline). Seuls des **ARN** circulent (`secrets-manager.yaml` → variables d'environnement `codebuild.yaml` → `taskdef.json`) ; un ARN n'est pas une donnée sensible, et `describe-task-definition` ne renvoie jamais la valeur, contrairement au bloc `Environment`. Validé par `test8-secrets.sh`. Reste à vérifier sur un vrai compte AWS : l'injection effective par l'agent ECS (service `ecs` Pro-only sur LocalStack). |
 | Le nombre de tâches Fargate scale automatiquement selon le CPU | ❌ | — | Recherche exhaustive (`ApplicationAutoScaling`, `ScalableTarget`, `ScalingPolicy`, `AutoScaling`) : **aucune occurrence dans tout le dépôt**. `ecs-service.yaml` utilise un `DesiredCount` fixe (paramètre, défaut 2). |
 
 ---
@@ -131,7 +135,7 @@ ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` dans le dépôt)
 | AWS CodeDeploy | ✅ | `pipeline.yml` (`CodeDeployApplication`, `CodeDeployDeploymentGroup`) |
 | Amazon ECS Fargate | ✅ | `ecs-cluster.yaml`, `ecs-service.yaml`, `ecs-task-definition.yaml` |
 | Application Load Balancer | ✅ | `alb.yaml` (2 target groups Blue/Green, listeners prod/test) |
-| AWS Secrets Manager | ❌ | `iam.yaml` (permission IAM uniquement, aucun secret réel) |
+| AWS Secrets Manager | ✅ | `secrets-manager.yaml` (2 secrets générés par AWS) + `iam.yaml` (`ReadAppSecrets`) + blocs `Secrets` des 2 task definitions |
 | Amazon CloudWatch | ✅ | `observability.yml` |
 | AWS SNS | ✅ | `pipeline.yml`, `observability.yml` |
 
@@ -142,7 +146,6 @@ ECS basé sur le CPU (aucune ressource `ApplicationAutoScaling` dans le dépôt)
 | Priorité | Sujet | Description |
 |---|---|---|
 | 🔴 Bloquant | Déploiement AWS réel | Aucune ressource n'a jamais été déployée sur un vrai compte AWS. CodeBuild, ALB, ECS, CodeDeploy et CodePipeline eux-mêmes (11 des ~17 ressources de `pipeline.yml`) ne sont validés que par `cfn-lint`, jamais exécutés. |
-| 🟠 Majeur | Secrets Manager non câblé | Créer une ressource `AWS::SecretsManager::Secret` et ajouter un bloc `Secrets:` dans les DEUX task definitions (`ecs-task-definition.yaml` et `taskdef.template.json`) pour au moins un secret, afin de rendre l'exigence F3 réellement fonctionnelle. |
 | 🟠 Majeur | Auto Scaling ECS absent | Ajouter un `AWS::ApplicationAutoScaling::ScalableTarget` + `ScalingPolicy` (cible CPU) sur le service ECS. |
 | 🟡 Mineur | Traffic shift non conforme aux paliers | Créer un `AWS::CodeDeploy::DeploymentConfig` personnalisé pour coller aux paliers 10 % → 50 % → 100 % du CDC, au lieu de la rampe linéaire prédéfinie actuelle. |
 | 🟡 Mineur | Rétention CloudWatch Logs CodeBuild | Ajouter une ressource `AWS::Logs::LogGroup` avec `RetentionInDays: 30` pour le log group CodeBuild dans `codebuild.yaml`. |
@@ -180,6 +183,35 @@ gate de couverture passe, `reports/junit.xml` est généré, l'image Docker est 
 48 Mo**, le CRUD complet a été exercé en direct contre le conteneur (ajout → API → bascule → suppression),
 le `HEALTHCHECK` Docker remonte `healthy`, `cfn-lint` est propre sur les deux templates modifiés, et
 `test2-codebuild.sh` repasse (exit 0).
+
+**2026-07-28 — mise à jour après câblage de Secrets Manager (F3).** Nouvelle stack `secrets-manager.yaml`
+(2 secrets, valeurs générées par AWS), bloc `Secrets` ajouté aux deux task definitions, permissions du rôle
+d'exécution ECS vérifiées. Points de conception notables :
+
+| Décision | Raison |
+|---|---|
+| Valeurs générées par AWS (`GenerateSecretString`), jamais en paramètre de stack | C'est le cœur de F3 : aucune valeur sensible ne doit exister dans le dépôt ni dans l'historique des paramètres CloudFormation. La vraie clé d'API tierce (non générable) se pousse hors CloudFormation via `put-secret-value` ; un update de stack ne l'écrase pas. |
+| ARN passés par exports CloudFormation → variables d'environnement CodeBuild → `taskdef.json` | L'ARN d'un secret se termine par un suffixe aléatoire de 6 caractères ajouté par AWS (confirmé empiriquement au Test 8 : `.../db-pvWiCG`) : **impossible à reconstruire par convention de nommage**. Un ARN n'est pas une donnée sensible, donc le faire transiter par CodeBuild ne contrevient pas à F3 — c'est la valeur qui ne doit jamais y apparaître. |
+| Bloc `Secrets` ajouté aux **deux** task definitions | Même piège que le health check corrigé plus haut : `taskdef.template.json` est celle réellement déployée à chaque exécution du pipeline. La déclarer seulement dans la CloudFormation aurait fait disparaître les secrets dès le premier passage. |
+| Restriction IAM par préfixe de nom plutôt que par ARN importé | Le wildcard `.../secret:<projet>/<env>/*` couvre le suffixe aléatoire et évite de coupler `iam.yaml` (déployée en 2ᵉ position) à la stack de secrets. Vérifié par correspondance de motif : les secrets d'un autre environnement ou d'un autre projet sont bien refusés. |
+| Pas de `kms:Decrypt` | Les secrets utilisent la clé gérée par AWS (`alias/aws/secretsmanager`), qui n'exige aucune permission KMS explicite. Commenté dans `iam.yaml` car ça devrait changer avec une clé gérée par le client, sous peine de tâches ECS qui ne démarrent plus. |
+
+Vérifications : `test8-secrets.sh` (nouveau, chaîné dans `test7-all-local.sh`) passe — les 2 secrets se
+créent, la structure JSON `username`/`password` du secret DB est confirmée, la longueur et l'exclusion de
+caractères du mot de passe généré sont vérifiées, les 4 exports attendus sont présents. Le rendu de
+`taskdef.json` par le `sed` de `buildspec.yml` a été simulé avec des ARN réalistes : JSON valide, 3 secrets
+correctement référencés, aucun placeholder oublié, aucune valeur de secret dans le fichier. `cfn-lint` est
+propre sur les 11 templates.
+
+Corrigé au passage : les notes d'ordre de déploiement étaient **incohérentes entre fichiers** (`iam.yaml`
+listait encore un `ecs.yaml` inexistant, `observability.yml` une liste de 6 stacks pré-refactor) et le
+tableau de `infrastructure/README.md` annonçait toujours « les 6 stacks » alors qu'il y en avait 10. Tout
+est normalisé sur une liste de référence unique de **11 stacks**.
+
+Limite connue et assumée : l'application ne **lit** pas encore ces secrets (`DB_USERNAME`, `DB_PASSWORD`,
+`API_KEY` sont disponibles dans le conteneur mais inutilisés) — le store est en mémoire et il n'y a ni base
+de données ni appel à un service tiers. Le mécanisme d'injection est en place et conforme à F3 ; son usage
+suivra le besoin applicatif.
 
 ---
 

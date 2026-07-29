@@ -22,6 +22,11 @@
         { "name": "NODE_ENV", "value": "production" },
         { "name": "APP_ENV", "value": "<ENVIRONMENT_NAME>" }
       ],
+      "secrets": [
+        { "name": "DB_USERNAME", "valueFrom": "<DB_SECRET_ARN>:username::" },
+        { "name": "DB_PASSWORD", "valueFrom": "<DB_SECRET_ARN>:password::" },
+        { "name": "API_KEY", "valueFrom": "<API_KEY_SECRET_ARN>" }
+      ],
       "healthCheck": {
         "command": [
           "CMD-SHELL",

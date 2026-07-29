@@ -13,7 +13,10 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml) :
-#   ... 6. alb.yaml   7. ecs-task-definition.yaml   <- cette stack   ...
+#   ... 7. alb.yaml   8. ecs-task-definition.yaml   <- cette stack   ...
+#
+# Dépend aussi de 3. secrets-manager.yaml : le bloc Secrets ci-dessous importe
+# les ARN des secrets. Sans cette stack, le déploiement échoue à l'import.
 # ------------------------------------------------------------------
 
 Parameters:
@@ -129,6 +132,37 @@ Resources:
             # Le nom de l'environnement du projet est exposé séparément.
             - Name: APP_ENV
               Value: !Ref Environment
+          # ====================================================================
+          # SECRETS (F3) — injectés au démarrage du conteneur par l'agent ECS,
+          # qui les lit dans Secrets Manager avec EcsTaskExecutionRole.
+          #
+          # Ils arrivent dans le conteneur comme des variables d'environnement
+          # classiques, MAIS leur valeur n'est stockée nulle part en clair :
+          # ni dans ce template, ni dans taskdef.json, ni dans les variables
+          # d'environnement du projet CodeBuild — seuls des ARN circulent.
+          # `aws ecs describe-task-definition` ne renvoie que l'ARN, jamais la
+          # valeur, contrairement au bloc Environment ci-dessus.
+          #
+          # Syntaxe "<arn>:<cléJson>::" : extrait UNE clé d'un secret JSON.
+          # Les 2 champs vides finaux sont version-stage et version-id (non
+          # précisés = version courante, AWSCURRENT).
+          # ====================================================================
+          Secrets:
+            - Name: DB_USERNAME
+              ValueFrom: !Sub
+                - '${SecretArn}:username::'
+                - SecretArn: !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-db-secret-arn'
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub
+                - '${SecretArn}:password::'
+                - SecretArn: !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-db-secret-arn'
+            # Secret à valeur simple (pas de JSON) : l'ARN nu suffit, sans
+            # suffixe de clé.
+            - Name: API_KEY
+              ValueFrom: !ImportValue
+                'Fn::Sub': '${ProjectName}-${Environment}-api-key-secret-arn'
           HealthCheck:
             Command:
               - CMD-SHELL
