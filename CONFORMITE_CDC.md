@@ -62,7 +62,7 @@ document.
 | 4 | Amazon ECR | ✅ | `infrastructure/cloudformation/ecr.yaml` | Repository privé, `ScanOnPush: true`, lifecycle policy 10 images. Testé de bout en bout sur LocalStack. |
 | 5 | AWS CloudFormation | ✅ | `infrastructure/cloudformation/*.yaml` | 12 templates non vides (`parameters.json` est vide, voir gaps). |
 | 6 | Docker | ✅ | `task-manager/Dockerfile` | Dockerfile unique, multi-stage, non-root, `HEALTHCHECK`. Le doublon single-stage de la racine a été supprimé. Image mesurée : **48 Mo**. |
-| 7 | GitHub Actions | ✅ | `.github/workflows/ci.yml` | Exécute les mêmes quality gates que `buildspec.yml` (SAST Semgrep, tests Jest, seuil de couverture 80 %) sur la même application, publie le rapport JUnit + la couverture HTML en artefacts, et valide le build Docker + sa taille. Ne pousse rien vers AWS (rôle volontairement limité à la protection de branche). |
+| 7 | GitHub Actions | ✅ | `.github/workflows/ci.yml` | **2 jobs parallèles.** `app` rejoue les gates de `buildspec.yml` sur la même application (npm ci, SAST Semgrep, tests Jest, seuil 80 %, build Docker + taille) et publie JUnit + couverture HTML/XML + rapport SAST en artefacts. `infra` rejoue la validation statique des scripts locaux : `cfn-lint` sur les 12 templates, validité de `appspec.yaml`/`buildspec.yml`/`taskdef.template.json`, et **dry-run du rendu de `taskdef.json`**. Ne pousse rien vers AWS (rôle volontairement limité à la protection de branche). |
 | 8 | Amazon CloudWatch | ✅ | `infrastructure/cloudformation/observability.yml` | Dashboard (8 widgets, dont le nombre de tâches ECS) + 2 alarmes de pipeline, plus 2 alarmes d'auto scaling dans `ecs-autoscaling.yaml`. Testé de bout en bout sur LocalStack. |
 | 9 | AWS SNS | ✅ | `pipeline.yml` (topic + policy), `observability.yml` (abonnement email optionnel) | Voir nuance sur l'état « approval pending » au Tableau 5. |
 
@@ -74,7 +74,7 @@ document.
 |---|---|---|---|
 | Push sur `main` déclenche le pipeline en <60s | ✅ | `codebuild.yaml` (webhook GitHub sur push `main`/`develop`), `pipeline.yml` (`CodeStarSourceConnection`, `BranchName: main`) | Déclenchement natif AWS, non chronométré empiriquement (jamais exécuté réellement). |
 | Push sur `feature/*` ne déclenche que Build+Test | ✅ | `.github/workflows/ci.yml` (`push: [..., 'feature/**']`) | Le workflow s'exécute sur `feature/**` et n'y fait que Build et Test : il ne pousse aucune image et ne touche jamais à AWS. Le stage Deploy reste l'affaire de CodePipeline, câblé sur `main` uniquement. |
-| PR vers `main` doit passer les quality gates avant merge | ✅ | `.github/workflows/ci.yml` | Sur `pull_request` vers `main`/`develop`, le job exécute SAST Semgrep (bloquant), les tests unitaires et le seuil de couverture 80 % (bloquant), puis valide le build Docker. Reste à activer la protection de branche côté GitHub pour rendre le job **obligatoire** au merge (réglage d'interface, hors dépôt). |
+| PR vers `main` doit passer les quality gates avant merge | ✅ | `.github/workflows/ci.yml` | Sur `pull_request` vers `main`/`develop`, les 2 jobs s'exécutent : `app` (SAST Semgrep bloquant, tests, seuil de couverture 80 % bloquant, build Docker) et `infra` (`cfn-lint` bloquant sur les 12 templates, validité des manifestes de déploiement, dry-run du rendu de `taskdef.json`). Aucun filtre de chemin, volontairement : un job conditionné qui ne démarre pas bloquerait indéfiniment une PR s'il était déclaré obligatoire. Reste à activer la protection de branche côté GitHub pour rendre les 2 jobs **obligatoires** au merge (réglage d'interface, hors dépôt). |
 | Déclenchement manuel via console/CLI reste possible | ✅ | — | Capacité native de CodePipeline/CodeBuild, aucun blocage identifié dans l'IaC. |
 
 ---
@@ -271,6 +271,40 @@ Vérifications complémentaires : XML Cobertura bien formé (3 classes, `line-ra
 
 Note : `pytest.ini` et `requirements.txt` ne s'appliquent pas — le projet a été unifié sur Node.js/Express,
 la pile de tests est Jest + Supertest.
+
+**2026-07-28 — mise à jour après alignement de GitHub Actions sur CodeBuild.** `ci.yml` est passé d'un job
+unique à **2 jobs parallèles** : `app` (les gates de `buildspec.yml`) et `infra` (la validation statique que
+faisaient seulement les scripts locaux). La CI détecte donc maintenant les erreurs d'infrastructure avant
+qu'un run CodePipeline soit consommé — et avant le merge.
+
+Ajouté au job `infra` : `cfn-lint` sur les 12 templates, validité YAML de `appspec.yaml` et `buildspec.yml`,
+validité JSON de `taskdef.template.json` (avec contrôle de présence du `healthCheck`, dont dépend le rollback
+Blue/Green), et un **dry-run du rendu de `taskdef.json`** — le même `sed` que `buildspec.yml`, suivi d'une
+vérification qu'il ne reste aucun placeholder non substitué hormis `<IMAGE1_NAME>` (substitué par
+CodePipeline). Ce dernier contrôle attrape en CI la classe de bugs qui, sinon, ne se manifeste qu'au stage
+Deploy, après un build et un push d'image complets.
+
+Ajouté au job `app` : le rapport SAST (`semgrep-report.json`, comme dans CodeBuild) est produit et publié en
+artefact, et la taille de l'image apparaît dans le résumé du job.
+
+| Détail technique | Pourquoi |
+|---|---|
+| `--ignore-checks W6001` sur `cfn-lint` | `cfn-lint` sort en **code 4** sur un simple warning. Les 5 outputs pass-through de `pipeline.yml` déclenchent W6001 (« output value is an import from another output ») — volontairement, pour préserver les noms d'export consommés par `observability.yml`. Seul ce check est ignoré : tout **nouveau** warning fait donc bien échouer le job. |
+| Aucun filtre de chemin sur les 2 jobs | Un job conditionné par les chemins modifiés qui ne démarre pas reste « en attente » et bloquerait indéfiniment une PR s'il est déclaré obligatoire dans la protection de branche GitHub. |
+
+**Bug latent trouvé et corrigé au passage** : `test5-pipeline.sh` **échouait déjà** (exit 4) depuis le
+refactor du 2026-07-27, pour cette même raison — il lançait `cfn-lint pipeline.yml` sous `set -e`, et les
+warnings W6001 introduits par les outputs pass-through interrompaient le script dès son étape 1. Le script
+passe maintenant `--ignore-checks W6001` et atteint bien ses étapes suivantes.
+
+`.gitignore` complété pour tous les fichiers générés par les CI (`semgrep-report.json`, `taskdef.json`,
+`taskdef.rendered.json`, `imageDetail.json`), en vérifiant que `taskdef.template.json` — la source
+versionnée — reste bien suivi.
+
+Vérifications : YAML du workflow valide (2 jobs, 9 + 6 étapes), et **chaque nouvelle étape rejouée
+localement** — `cfn-lint` sur les 12 templates avec le flag (exit 0), validation des manifestes (port 3000,
+3 secrets, `healthCheck` présent), dry-run du rendu (`taskdef.json` valide, seul `<IMAGE1_NAME>` subsistant),
+29 tests / 100 % de couverture, et les 4 artefacts de couverture présents.
 
 ---
 

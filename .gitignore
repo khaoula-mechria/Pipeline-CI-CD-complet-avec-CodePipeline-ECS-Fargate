@@ -13,3 +13,18 @@ reports/
 # exportée dans les artefacts CodeBuild (US-02). Générée, donc non versionnée.
 coverage-html.tar.gz
 **/coverage-html.tar.gz
+
+# Rapport SAST, produit par Semgrep dans buildspec.yml et dans ci.yml.
+semgrep-report.json
+**/semgrep-report.json
+
+# Fichiers de déploiement GÉNÉRÉS au build par buildspec.yml (à partir de
+# taskdef.template.json, lui bien versionné) et par le dry-run de ci.yml.
+# Ne jamais les committer : ils contiennent des valeurs propres à un compte AWS
+# et à un build donné.
+taskdef.json
+**/taskdef.json
+taskdef.rendered.json
+**/taskdef.rendered.json
+imageDetail.json
+**/imageDetail.json

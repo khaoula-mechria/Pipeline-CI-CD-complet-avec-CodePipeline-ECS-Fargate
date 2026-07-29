@@ -1,15 +1,23 @@
 # ==============================================================================
-# CI GitHub Actions — quality gates exécutés AVANT le merge.
+# CI GitHub Actions — quality gates exécutés AVANT le merge et AVANT le
+# pipeline AWS.
 #
-# Volontairement alignée sur task-manager/buildspec.yml (les mêmes gates, dans
-# le même ordre) : GitHub Actions protège la branche, CodeBuild reste la source
-# de vérité qui build et pousse réellement l'image vers ECR. Les deux valident
-# désormais la MÊME application (task-manager/, Node.js/Express).
+# Objectif : détecter les erreurs sans consommer un run CodePipeline. Le job
+# "app" rejoue les mêmes étapes que task-manager/buildspec.yml (dépendances,
+# SAST Semgrep, tests, seuil de couverture, build Docker) ; le job "infra"
+# rejoue la validation statique que font les scripts infrastructure/scripts/
+# (cfn-lint + cohérence des fichiers de déploiement). CodeBuild reste la seule
+# source de vérité qui build et POUSSE réellement l'image vers ECR — ce
+# workflow ne touche jamais à AWS.
 #
 # F1 du cahier des charges :
 #   - PR vers main/develop -> les quality gates doivent passer avant merge.
-#   - push sur feature/** -> Build et Test uniquement (aucun déploiement ici :
-#     ce workflow ne pousse jamais d'image et ne touche jamais à AWS).
+#   - push sur feature/** -> Build et Test uniquement (aucun déploiement ici).
+#
+# Les deux jobs tournent en parallèle et SANS filtre de chemin, volontairement :
+# un job conditionné par les chemins modifiés qui ne démarre pas reste "en
+# attente" et bloquerait indéfiniment une PR si on le déclare obligatoire dans
+# la protection de branche GitHub.
 # ==============================================================================
 
 name: CI
@@ -30,14 +38,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Même seuil que COVERAGE_THRESHOLD dans buildspec.yml (F2 : >= 80 %).
-  COVERAGE_THRESHOLD: '80'
-
 jobs:
-  build-and-test:
-    name: Build & Test
+
+  # ============================================================================
+  # JOB 1 — APPLICATION : mêmes gates que buildspec.yml
+  # ============================================================================
+  app:
+    name: Application (build, tests, SAST)
     runs-on: ubuntu-latest
+
+    env:
+      # Même seuil que COVERAGE_THRESHOLD dans buildspec.yml (F2 : >= 80 %).
+      COVERAGE_THRESHOLD: '80'
 
     defaults:
       run:
@@ -51,6 +63,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
+          # Même version que le runtime-versions de buildspec.yml.
           node-version: '20'
           cache: npm
           cache-dependency-path: task-manager/package-lock.json
@@ -61,12 +74,13 @@ jobs:
       # ----------------------------------------------------------------------
       # SAST — même outil et même politique que buildspec.yml : Semgrep sort en
       # erreur (--error) dès qu'un finding de sévérité ERROR est trouvé, ce qui
-      # fait échouer le job et bloque la PR.
+      # fait échouer le job et bloque la PR. Le rapport JSON est produit comme
+      # dans CodeBuild, et publié en artefact pour pouvoir être relu.
       # ----------------------------------------------------------------------
       - name: SAST (Semgrep)
         run: |
           pip install semgrep
-          semgrep --config auto --error .
+          semgrep --config auto --error --json --output semgrep-report.json .
 
       # Pas de --coverageReporters ici : jest.config.js est la source de vérité
       # (text + json-summary + lcov/HTML + Cobertura XML). Jest échoue déjà
@@ -87,10 +101,11 @@ jobs:
           fi
           echo "### Couverture : ${COVERAGE}% (seuil ${COVERAGE_THRESHOLD}%)" >> "$GITHUB_STEP_SUMMARY"
 
-      # Rapport JUnit + couverture HTML + couverture XML publiés comme
-      # artefacts : US-02 du cahier des charges (le Tech Lead doit pouvoir
-      # consulter la couverture de chaque build).
-      - name: Upload test reports
+      # Rapport JUnit + couverture HTML + couverture XML + rapport SAST publiés
+      # comme artefacts : US-02 du cahier des charges (le Tech Lead doit pouvoir
+      # consulter la couverture de chaque build). `always()` pour les récupérer
+      # même quand un gate a échoué — c'est là qu'ils sont le plus utiles.
+      - name: Upload test & SAST reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -100,6 +115,7 @@ jobs:
             task-manager/coverage/lcov-report/
             task-manager/coverage/cobertura-coverage.xml
             task-manager/coverage/lcov.info
+            task-manager/semgrep-report.json
           if-no-files-found: warn
 
       # ----------------------------------------------------------------------
@@ -114,6 +130,115 @@ jobs:
         run: |
           SIZE_MB=$(docker image inspect taskmanager:ci --format '{{.Size}}' | awk '{printf "%.0f", $1 / 1024 / 1024}')
           echo "Taille de l'image : ${SIZE_MB} Mo (cible : < 200 Mo)"
+          echo "### Image Docker : ${SIZE_MB} Mo (cible < 200 Mo)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$SIZE_MB" -ge 200 ]; then
             echo "::warning::L'image dépasse la cible de 200 Mo (${SIZE_MB} Mo)"
           fi
+
+  # ============================================================================
+  # JOB 2 — INFRASTRUCTURE : validation statique des templates CloudFormation
+  #
+  # Reproduit ce que font les scripts infrastructure/scripts/ en local, sans
+  # LocalStack : une faute dans un template ne se verrait sinon qu'au moment du
+  # `aws cloudformation deploy`, donc bien après le merge.
+  # ============================================================================
+  infra:
+    name: Infrastructure (cfn-lint)
+    runs-on: ubuntu-latest
+
+    env:
+      # W6001 = "output value is an import from another output". Les 5 outputs
+      # pass-through de pipeline.yml sont EXACTEMENT ce motif, et c'est
+      # volontaire : ils préservent les noms d'export consommés par
+      # observability.yml après l'extraction des stacks ECS/ALB du 2026-07-27.
+      # On ignore donc ce check précis, et uniquement lui — cfn-lint sort en
+      # code 4 sur un warning, donc tout NOUVEAU warning fera bien échouer le
+      # job.
+      CFN_LINT_IGNORE: W6001
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint CloudFormation templates
+        run: |
+          cfn-lint infrastructure/cloudformation/*.yaml infrastructure/cloudformation/*.yml \
+            --ignore-checks "$CFN_LINT_IGNORE"
+          echo "### CloudFormation : $(ls infrastructure/cloudformation/*.yaml infrastructure/cloudformation/*.yml | wc -l) templates validés" >> "$GITHUB_STEP_SUMMARY"
+
+      # ----------------------------------------------------------------------
+      # Fichiers de déploiement consommés par CodePipeline/CodeDeploy. Une
+      # erreur ici ne se verrait qu'au stage Deploy, après un build complet.
+      # ----------------------------------------------------------------------
+      - name: Validate deployment manifests
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+
+          import yaml
+
+          erreurs = []
+
+          # appspec.yaml et buildspec.yml doivent rester du YAML valide.
+          for chemin in ('task-manager/appspec.yaml', 'task-manager/buildspec.yml'):
+              try:
+                  yaml.safe_load(open(chemin, encoding='utf-8'))
+                  print(f'OK   {chemin}')
+              except Exception as exc:
+                  erreurs.append(f'{chemin}: {exc}')
+
+          # taskdef.template.json doit être du JSON valide même AVANT
+          # substitution (les placeholders sont à l'intérieur de chaînes).
+          try:
+              taskdef = json.load(open('task-manager/taskdef.template.json', encoding='utf-8'))
+              conteneur = taskdef['containerDefinitions'][0]
+              print('OK   task-manager/taskdef.template.json')
+              print(f"     port={conteneur['portMappings'][0]['containerPort']}"
+                    f"  secrets={[s['name'] for s in conteneur.get('secrets', [])]}")
+              if 'healthCheck' not in conteneur:
+                  erreurs.append('taskdef.template.json: healthCheck absent '
+                                 '(le rollback Blue/Green en dépend)')
+          except Exception as exc:
+              erreurs.append(f'taskdef.template.json: {exc}')
+
+          if erreurs:
+              for erreur in erreurs:
+                  print(f'::error::{erreur}')
+              sys.exit(1)
+          PY
+
+      # ----------------------------------------------------------------------
+      # Simule le rendu de taskdef.json fait par buildspec.yml. Sans ça, un
+      # placeholder oublié ne se verrait qu'au stage Deploy : le taskdef serait
+      # rejeté par ECS après un build complet et un push d'image.
+      # ----------------------------------------------------------------------
+      - name: Dry-run taskdef.json rendering
+        working-directory: task-manager
+        run: |
+          sed \
+            -e "s|<AWS_ACCOUNT_ID>|123456789012|g" \
+            -e "s|<PROJECT_NAME>|taskmanager|g" \
+            -e "s|<ENVIRONMENT_NAME>|dev|g" \
+            -e "s|<AWS_REGION>|eu-west-1|g" \
+            -e "s|<DB_SECRET_ARN>|arn:aws:secretsmanager:eu-west-1:123456789012:secret:taskmanager/dev/db-AbC1dE|g" \
+            -e "s|<API_KEY_SECRET_ARN>|arn:aws:secretsmanager:eu-west-1:123456789012:secret:taskmanager/dev/api-key-Fg2HiJ|g" \
+            taskdef.template.json > taskdef.rendered.json
+
+          python -c "import json; json.load(open('taskdef.rendered.json')); print('taskdef.json rendu : JSON valide')"
+
+          # <IMAGE1_NAME> est le SEUL placeholder qui doit subsister : c'est
+          # CodePipeline qui le substitue (Image1ContainerName).
+          RESTANTS=$(grep -o '<[A-Z_0-9]*>' taskdef.rendered.json | sort -u | grep -v '<IMAGE1_NAME>' || true)
+          if [ -n "$RESTANTS" ]; then
+            echo "::error::Placeholders non substitués dans taskdef.json : $RESTANTS"
+            exit 1
+          fi
+          echo "Seul <IMAGE1_NAME> subsiste, comme attendu"

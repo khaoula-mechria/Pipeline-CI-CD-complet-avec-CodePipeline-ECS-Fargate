@@ -763,6 +763,9 @@ tâches monte, puis redescend une fois la charge retombée.
   `alb.yaml`/`ecs-task-definition.yaml`/`ecs-service.yaml` — les 4 nouveaux
   templates n'ont été validés que par `cfn-lint` jusqu'ici (voir entrée
   d'historique 2026-07-27), pas encore déployés sur LocalStack.
+  (Le blocage qui faisait échouer `test5-pipeline.sh` dès son étape 1 depuis ce
+  refactor — `cfn-lint` sortant en code 4 sur les warnings W6001 sous `set -e`
+  — a été corrigé le 2026-07-28 ; il reste à couvrir les 4 nouvelles stacks.)
 - Les gaps de conformité listés dans `CONFORMITE_CDC.md` encore ouverts (tous
   mineurs désormais) : rétention manquante sur le log group CodeBuild, scan ECR
   non exploité par le pipeline, pas de notification spécifique
@@ -1010,3 +1013,35 @@ Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
   valide, `.gitignore` complété, et `test2-codebuild.sh` repasse (exit 0).
   Note : `pytest.ini`/`requirements.txt` ne s'appliquent pas, le projet est
   unifié sur Node.js/Express (Jest + Supertest).
+- 2026-07-28 — **GitHub Actions aligné sur CodeBuild** : `ci.yml` passe d'un
+  job unique à **2 jobs parallèles**. `app` rejoue les gates de
+  `buildspec.yml` (npm ci, SAST Semgrep avec production et publication du
+  `semgrep-report.json` comme dans CodeBuild, tests, seuil de couverture,
+  build Docker + taille dans le résumé du job). `infra` rejoue la validation
+  statique que seuls les scripts locaux faisaient jusqu'ici : `cfn-lint` sur
+  les 12 templates, validité YAML de `appspec.yaml`/`buildspec.yml`, validité
+  JSON de `taskdef.template.json` avec contrôle de présence du `healthCheck`
+  (dont dépend le rollback Blue/Green), et surtout un **dry-run du rendu de
+  `taskdef.json`** — le même `sed` que le buildspec, suivi d'une vérification
+  qu'aucun placeholder ne subsiste hormis `<IMAGE1_NAME>`. Ce dernier contrôle
+  attrape en CI une classe de bugs qui, sinon, n'apparaît qu'au stage Deploy,
+  après un build et un push d'image complets.
+  Détail à connaître : `cfn-lint` sort en **code 4** sur un simple warning, et
+  les 5 outputs pass-through de `pipeline.yml` déclenchent W6001
+  volontairement. Les deux jobs utilisent donc `--ignore-checks W6001`, et
+  uniquement ce check — tout nouveau warning fera bien échouer la CI. Aucun
+  filtre de chemin sur les jobs, volontairement : un job conditionné qui ne
+  démarre pas resterait « en attente » et bloquerait une PR s'il était déclaré
+  obligatoire dans la protection de branche.
+  **Bug latent trouvé et corrigé** : `test5-pipeline.sh` échouait déjà
+  (exit 4) depuis le refactor du 2026-07-27, pour exactement cette raison — il
+  lançait `cfn-lint pipeline.yml` sous `set -e` et les warnings W6001
+  interrompaient le script dès son étape 1. Corrigé avec le même flag ; le
+  script atteint maintenant ses étapes suivantes (vérifié).
+  `.gitignore` complété pour tous les fichiers générés par les CI
+  (`semgrep-report.json`, `taskdef.json`, `taskdef.rendered.json`,
+  `imageDetail.json`), en vérifiant que `taskdef.template.json` — la source
+  versionnée — reste bien suivi par git.
+  Vérifié : YAML du workflow valide (2 jobs, 9 + 6 étapes) et **chaque
+  nouvelle étape rejouée localement** (cfn-lint exit 0 sur les 12 templates,
+  manifestes validés, dry-run du taskdef propre, 29 tests / 100 %).

@@ -62,8 +62,15 @@ echo "1) Analyse statique du template complet (cfn-lint)"
 echo "   Valide TOUTES les ressources, y compris celles non"
 echo "   déployables sur LocalStack Community (voir en-tête)."
 echo "──────────────────────────────────────────────"
-cfn-lint "$CFN_DIR/pipeline.yml"
-echo "✅ Template valide syntaxiquement"
+# --ignore-checks W6001 : "output value is an import from another output". Les 5
+# outputs pass-through de pipeline.yml sont exactement ce motif, volontairement
+# (ils préservent les noms d'export consommés par observability.yml après
+# l'extraction des stacks ECS/ALB du 2026-07-27). Sans ce flag, cfn-lint sort en
+# code 4 (warning) et `set -e` interrompait ce script dès cette étape — c'est ce
+# qui le faisait échouer depuis le refactor. Seul ce check est ignoré : tout
+# nouveau warning fera bien échouer le script.
+cfn-lint "$CFN_DIR/pipeline.yml" --ignore-checks W6001
+echo "✅ Template valide syntaxiquement (hors W6001 attendus, voir commentaire)"
 echo ""
 
 echo "──────────────────────────────────────────────"
