@@ -1,7 +1,7 @@
 version: 0.2
 
 # ==============================================================================
-# buildspec.yml — Pipeline de build pour l'application Node.js (task manager)
+# buildspec.yml — Pipeline de build de l'application task-manager (Node.js).
 #
 # Ordre des phases (cohérent avec l'architecture documentée du pipeline) :
 #   install    -> dépendances npm + outil SAST
@@ -9,14 +9,23 @@ version: 0.2
 #   build      -> construction de l'image Docker multi-stage
 #   post_build -> tests unitaires + seuil de couverture, puis push ECR
 #
-# Variables ECR_REPOSITORY_URI / AWS_DEFAULT_REGION / AWS_ACCOUNT_ID sont
-# injectées automatiquement par le projet CodeBuild (voir codebuild.yaml).
+# Variables ECR_REPOSITORY_URI / AWS_DEFAULT_REGION / AWS_ACCOUNT_ID /
+# PROJECT_NAME / ENVIRONMENT_NAME sont injectées automatiquement par le projet
+# CodeBuild (voir codebuild.yaml).
+#
+# IMPORTANT — répertoire de travail : CodeBuild exécute TOUTES les commandes
+# depuis la racine du dépôt cloné ($CODEBUILD_SRC_DIR), quel que soit l'endroit
+# où se trouve ce fichier. Comme l'application vit dans task-manager/, chaque
+# phase commence par un `cd` explicite vers $APP_DIR. Les chemins des sections
+# reports/artifacts/cache, eux, restent relatifs à $CODEBUILD_SRC_DIR et
+# portent donc le préfixe "task-manager/".
 # ==============================================================================
 
 env:
   variables:
     NODE_ENV: "test"
     COVERAGE_THRESHOLD: "80"
+    APP_DIR: "task-manager"
 
 phases:
 
@@ -25,6 +34,7 @@ phases:
       nodejs: 20
     commands:
       - echo "=== INSTALL === $(date)"
+      - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
       - echo "Installation des dépendances de l'application (lockfile figé)"
       - npm ci
       - echo "Installation de Semgrep (outil SAST choisi : CLI-natif, pas de serveur)"
@@ -33,8 +43,11 @@ phases:
   pre_build:
     commands:
       - echo "=== PRE-BUILD === Analyse SAST du code source"
+      - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
       # --error fait sortir semgrep avec un code != 0 si des findings sont trouvés
       # avec la sévérité ERROR (équivalent "critique" pour notre quality gate).
+      # Même commande que dans .github/workflows/ci.yml : les deux gates SAST
+      # sont volontairement identiques.
       - semgrep --config auto --error --json --output semgrep-report.json . || SAST_STATUS=$?
       - |
         if [ "${SAST_STATUS:-0}" -ne 0 ]; then
@@ -52,15 +65,18 @@ phases:
   build:
     commands:
       - echo "=== BUILD === Construction de l'image Docker (multi-stage)"
+      # Le contexte de build est task-manager/ : c'est là que vivent le
+      # Dockerfile multi-stage, package.json et le code applicatif.
+      - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
       - docker build -t "$ECR_REPOSITORY_URI:$IMAGE_TAG" -t "$ECR_REPOSITORY_URI:latest" .
-      - echo "Taille de l'image générée :"
+      - echo "Taille de l'image générée (cible < 200 Mo) :"
       - docker images "$ECR_REPOSITORY_URI:$IMAGE_TAG"
 
   post_build:
     commands:
       - echo "=== POST-BUILD === Exécution des tests unitaires"
-      # --coverage génère coverage/coverage-summary.json (nécessite jest configuré,
-      # voir jest.config.js d'exemple fourni séparément)
+      - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
+      # --coverage génère coverage/coverage-summary.json (voir jest.config.js)
       - npm test -- --coverage --coverageReporters=json-summary --coverageReporters=text
       - echo "Vérification du seuil de couverture (${COVERAGE_THRESHOLD}%)"
       - |
@@ -90,19 +106,23 @@ phases:
           taskdef.template.json > taskdef.json
       - cat taskdef.json
 
+# Chemins ci-dessous : relatifs à $CODEBUILD_SRC_DIR (racine du dépôt), pas au
+# répertoire de travail des phases.
 reports:
   unit-tests:
     files:
       - 'junit.xml'
     file-format: JUNITXML
-    base-directory: 'reports'
+    base-directory: 'task-manager/reports'
 
 artifacts:
   files:
-    - imageDetail.json
-    - taskdef.json
+    - task-manager/imageDetail.json
+    - task-manager/taskdef.json
+  # Aplatit les chemins : l'action CodeDeployToECS attend imageDetail.json et
+  # taskdef.json à la racine de l'artefact de build.
   discard-paths: yes
 
 cache:
   paths:
-    - 'node_modules/**/*'
+    - 'task-manager/node_modules/**/*'

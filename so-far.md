@@ -109,13 +109,38 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
   ci-dessous pour le détail et les deux corrections que sa mise en place a
   révélées dans les scripts existants.
 
-### Application (`task-manager/`, Node.js/Express)
+### Application (`task-manager/`, Node.js/Express — application UNIQUE)
 
-- `src/app.js` + `server.js` — API minimale (`/health`, `/api/tasks`).
-- `tests/health.test.js` — tests unitaires (Jest + Supertest), 100% de
-  couverture sur `app.js`.
-- `Dockerfile` — build multi-stage (< 200 Mo), image de prod sans
-  devDependencies, exécution en utilisateur non-root, `HEALTHCHECK` intégré.
+- **Unification sur une seule application (2026-07-28)** : le dépôt contenait
+  deux applications divergentes — une app Flask/SQLite avec le vrai CRUD
+  (`src/app.py` + `templates/index.html`) et un stub Express (`/health` +
+  `/api/tasks` vide) autour duquel tout le pipeline était construit. La CI
+  GitHub ne validait que la Flask, que rien ne déployait. Le CRUD a été **porté
+  vers Express**, puis la version Flask supprimée. Fichiers supprimés :
+  `task-manager/src/app.py`, `templates/index.html`, `requirements.txt`,
+  `task-manager/tasks.db`, le `Dockerfile` single-stage de la racine, les
+  `package.json`/`package-lock.json` dupliqués de la racine, et le fichier
+  fantôme `task-manager/ server.js`.
+- `src/app.js` — routes Express : `/` (UI HTML), `POST /add`,
+  `POST /toggle/:id`, `POST /delete/:id`, `GET /api/tasks`, `GET /health`.
+- `src/tasks.js` — store des tâches **en mémoire**. Choix assumé et documenté
+  dans l'en-tête du fichier : le système de fichiers Fargate est éphémère et
+  plusieurs tâches tournent derrière l'ALB, donc un SQLite local (comme la
+  version Flask) donnerait un état divergent par tâche, effacé à chaque
+  déploiement Blue/Green. Un stockage partagé (DynamoDB/RDS) ne demanderait de
+  remplacer que ce module.
+- `src/views.js` — rendu HTML de la page (portage du template Jinja2), sans
+  moteur de template externe : zéro dépendance ajoutée, et échappement HTML
+  explicite (Jinja2 échappait automatiquement — sans ça, XSS stockée).
+- `tests/` — 27 tests (Jest + Supertest) répartis en `health.test.js`,
+  `tasks.test.js`, `views.test.js` : **100% de couverture** sur les 3 modules
+  de `src/`. `jest.config.js` fixe désormais `collectCoverageFrom: ['src/**/*.js']`
+  — sans ça, ajouter un module non testé ne faisait pas baisser la couverture
+  et le quality gate à 80% était contournable.
+- `Dockerfile` — build multi-stage, image de prod sans devDependencies,
+  exécution en utilisateur non-root, `HEALTHCHECK` intégré. **Taille réelle
+  mesurée : 48 Mo** (cible < 200 Mo du cahier des charges) — jamais mesurée
+  jusqu'ici, seulement visée.
 - `buildspec.yml` — phases install (npm ci + SAST Semgrep) → pre_build (login
   ECR) → build (docker build) → post_build (tests + seuil de couverture 80% +
   push ECR). Depuis `pipeline.yml` : post_build génère aussi `imageDetail.json`
@@ -132,9 +157,34 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
 - `appspec.yaml` — AppSpec CodeDeploy pour ECS (statique, aucune valeur
   spécifique au compte -> versionné tel quel, consommé directement depuis
   l'artefact Source par l'action `CodeDeployToECS`).
-- `package.json` / `package-lock.json` propres à `task-manager/` (app
-  autonome, cohérente avec le futur repo GitHub dédié pointé par
-  `GitHubRepoUrl` dans `codebuild.yaml`).
+- `package.json` / `package-lock.json` propres à `task-manager/` — désormais
+  les **seuls** manifestes Node du dépôt (ceux de la racine, qui dupliquaient
+  les mêmes dépendances, ont été supprimés : c'est exactement ce genre de
+  duplication qui avait laissé les deux applications diverger).
+- **Résolution de chemin du buildspec corrigée (2026-07-28)** : `codebuild.yaml`
+  déclarait `BuildSpec: buildspec.yml`, un chemin résolu depuis la **racine**
+  du dépôt cloné — or le fichier est dans `task-manager/`. CodeBuild ne l'aurait
+  jamais trouvé et le build aurait échoué avant la phase `install`. Corrigé en
+  `BuildSpec: task-manager/buildspec.yml` ; en contrepartie, chaque phase du
+  buildspec commence par un `cd "$CODEBUILD_SRC_DIR/$APP_DIR"` (CodeBuild
+  exécute toujours les commandes depuis la racine du dépôt, quel que soit
+  l'emplacement du buildspec) et les sections `reports`/`artifacts`/`cache`
+  portent le préfixe `task-manager/`. `test2-codebuild.sh` a été aligné en
+  conséquence (`npm ci`/`npm test` dans `task-manager/`, et rejeu du buildspec
+  avec `-s <racine> -b task-manager/buildspec.yml`).
+- **`taskdef.template.json` aligné sur `ecs-task-definition.yaml`** : il ne
+  contenait ni `environment` ni `healthCheck`. Comme c'est CE fichier que
+  l'action `CodeDeployToECS` déploie à chaque exécution du pipeline (la task
+  definition CloudFormation ne sert qu'au bootstrap), le health check du
+  conteneur disparaissait dès le premier passage du pipeline — or c'est lui qui
+  conditionne le rollback automatique Blue/Green (F3). Les deux fichiers
+  déclarent maintenant le même health check et les mêmes variables.
+- **`NODE_ENV` corrigé** dans `ecs-task-definition.yaml` : la valeur était
+  `!Ref Environment`, donc `dev`/`staging`/`prod` — aucune n'est une valeur
+  valide pour Node/Express (`prod` ≠ `production`), et elle écrasait le
+  `ENV NODE_ENV=production` du Dockerfile, faisant tourner l'application en
+  mode dégradé jusqu'en production. Désormais `NODE_ENV: production` fixe, et
+  le nom de l'environnement du projet est exposé séparément via `APP_ENV`.
 
 ### Tests locaux exécutés et confirmés (sans accès AWS)
 
@@ -575,9 +625,15 @@ ni ne réduit la couverture — il ne fait qu'agréger). Voir
   `alb.yaml`/`ecs-task-definition.yaml`/`ecs-service.yaml` — les 4 nouveaux
   templates n'ont été validés que par `cfn-lint` jusqu'ici (voir entrée
   d'historique 2026-07-27), pas encore déployés sur LocalStack.
-- Fichier fantôme connu mais non traité : `task-manager/ server.js` (avec un
-  espace en début de nom, vide, tracké dans git) — doublon de
-  `task-manager/server.js`, à nettoyer un jour.
+- Les gaps de conformité listés dans `CONFORMITE_CDC.md` et non traités par
+  l'unification applicative : Secrets Manager non câblé (permission IAM seule,
+  aucun secret réel ni bloc `Secrets:`), auto-scaling ECS absent
+  (`ApplicationAutoScaling` nulle part), rétention manquante sur le log group
+  CodeBuild, scan ECR non exploité par le pipeline, pas de notification
+  spécifique « rollback completed », pas de stage `ManualApproval`.
+
+(Le fichier fantôme `task-manager/ server.js` a été supprimé le 2026-07-28
+lors de l'unification applicative — cf. section Application ci-dessus.)
 
 ## Prochaine étape
 
@@ -595,11 +651,24 @@ pu vérifier :
 - La fonction Lambda de métriques, le rendu réel du dashboard, et le
   déclenchement effectif des 2 alarmes sur des données réelles (Test 6).
 
-Sans accès AWS, il ne reste plus de nouveau composant d'infrastructure
-évident à écrire d'après le cahier des charges — le travail restant serait
-plutôt de la relecture/consolidation (revue croisée des 6 templates entre
-eux, cohérence des conventions de nommage) ou du nettoyage mineur déjà
-identifié (fichier fantôme `task-manager/ server.js`).
+Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
+`CONFORMITE_CDC.md` et faisables sans compte AWS (tous en IaC ou en code) :
+
+- Câbler Secrets Manager pour de vrai : une ressource
+  `AWS::SecretsManager::Secret` + un bloc `Secrets:` dans les **deux** task
+  definitions (`ecs-task-definition.yaml` ET `taskdef.template.json` — c'est
+  la seconde qui est réellement déployée à chaque exécution du pipeline).
+- Ajouter l'auto-scaling ECS (`AWS::ApplicationAutoScaling::ScalableTarget` +
+  `ScalingPolicy` sur le CPU), totalement absent du dépôt aujourd'hui.
+- Un `AWS::CodeDeploy::DeploymentConfig` personnalisé pour coller aux paliers
+  10 % → 50 % → 100 % du cahier des charges (la config prédéfinie actuelle est
+  une rampe linéaire).
+- La rétention 30 jours manquante sur le log group CodeBuild, un stage
+  `ManualApproval` (pour que l'état « approval pending » de F4 existe), et
+  l'exploitation du résultat du scan ECR (US-05).
+- Mettre à jour `test5-pipeline.sh` et consorts pour le découpage en 4
+  templates ECS/ALB du 2026-07-27 (seul `test2-codebuild.sh` a été réaligné,
+  lors de l'unification applicative du 2026-07-28).
 
 ## Historique des mises à jour de ce fichier
 
@@ -672,3 +741,34 @@ identifié (fichier fantôme `task-manager/ server.js`).
   modifiés templates passent `cfn-lint` sans erreur (seuls des warnings
   W6001 attendus sur les outputs pass-through de `pipeline.yml`) ; pas
   encore redéployés sur LocalStack sous ce nouveau découpage.
+- 2026-07-28 — **unification sur une application unique** (Node.js/Express),
+  suite au constat bloquant du rapport de conformité. Le CRUD de l'app Flask
+  (liste, ajout, bascule, suppression, UI HTML) a été porté vers Express en 3
+  modules (`src/app.js`, `src/tasks.js` store en mémoire, `src/views.js` rendu
+  HTML sans dépendance), puis l'app Flask et tous les doublons supprimés
+  (`src/app.py`, `templates/index.html`, `requirements.txt`, `tasks.db`,
+  `Dockerfile` racine single-stage, `package.json`/`package-lock.json` racine,
+  fichier fantôme `task-manager/ server.js`). `.github/workflows/ci.yml`
+  réécrit : il ne fait plus un `py_compile` d'une app que rien ne déployait,
+  mais exécute les mêmes gates que `buildspec.yml` (SAST Semgrep, tests,
+  seuil de couverture 80 %), publie le rapport JUnit + la couverture HTML en
+  artefacts (US-02), build l'image et mesure sa taille — et se déclenche aussi
+  sur `feature/**` en Build+Test seulement (F1). Trois bugs réels trouvés au
+  passage et corrigés : le `BuildSpec:` de `codebuild.yaml` pointait vers un
+  chemin inexistant (le build aurait échoué avant `install`), le
+  `taskdef.template.json` réellement déployé perdait le health check du
+  conteneur dont dépend le rollback Blue/Green, et `NODE_ENV` recevait
+  `dev`/`prod` en écrasant le `production` du Dockerfile. Vérifié : 27 tests
+  passent, 100 % de couverture, image mesurée à **48 Mo** (< 200 Mo), CRUD
+  complet exercé en direct contre le conteneur (ajout → API → bascule →
+  suppression), `HEALTHCHECK` Docker à `healthy`, `cfn-lint` propre, et
+  `test2-codebuild.sh` repasse (exit 0).
+- 2026-07-28 — création de `CONFORMITE_CDC.md` : audit de conformité du
+  dépôt par rapport au cahier des charges fourni (tableaux exigence par
+  exigence pour §1.3, F1-F4, US-01 à US-05, §4.2, plus une liste priorisée
+  de ce qu'il reste à faire). Deux manques structurels identifiés : Secrets
+  Manager non câblé (IAM seul, aucun secret réel ni bloc `Secrets:`) et
+  auto-scaling ECS totalement absent. Confirme aussi l'incohérence
+  applicative déjà connue (pipeline construit autour du stub Express, pas
+  de l'app Flask réelle) et le fait qu'aucun déploiement AWS réel n'a
+  encore eu lieu.

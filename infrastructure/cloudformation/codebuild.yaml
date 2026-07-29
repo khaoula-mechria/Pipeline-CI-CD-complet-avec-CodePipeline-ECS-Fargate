@@ -121,7 +121,12 @@ Resources:
       Source:
         Type: GITHUB
         Location: !Ref GitHubRepoUrl
-        BuildSpec: buildspec.yml
+        # Chemin résolu depuis la RACINE du dépôt cloné, pas depuis un
+        # sous-répertoire : l'application vit dans task-manager/, donc le
+        # buildspec doit être désigné avec son préfixe. Avec la valeur
+        # précédente ("buildspec.yml"), CodeBuild cherchait le fichier à la
+        # racine et le build échouait avant même la phase install.
+        BuildSpec: task-manager/buildspec.yml
         GitCloneDepth: 1
         ReportBuildStatus: true
 

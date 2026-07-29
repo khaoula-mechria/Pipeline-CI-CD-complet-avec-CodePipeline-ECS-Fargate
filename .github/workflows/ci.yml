@@ -1,4 +1,18 @@
-name: Repository CI
+# ==============================================================================
+# CI GitHub Actions — quality gates exécutés AVANT le merge.
+#
+# Volontairement alignée sur task-manager/buildspec.yml (les mêmes gates, dans
+# le même ordre) : GitHub Actions protège la branche, CodeBuild reste la source
+# de vérité qui build et pousse réellement l'image vers ECR. Les deux valident
+# désormais la MÊME application (task-manager/, Node.js/Express).
+#
+# F1 du cahier des charges :
+#   - PR vers main/develop -> les quality gates doivent passer avant merge.
+#   - push sur feature/** -> Build et Test uniquement (aucun déploiement ici :
+#     ce workflow ne pousse jamais d'image et ne touche jamais à AWS).
+# ==============================================================================
+
+name: CI
 
 on:
   pull_request:
@@ -8,23 +22,88 @@ on:
   push:
     branches:
       - main
+      - develop
+      - 'feature/**'
+
+# Un nouveau push sur une PR annule le run précédent (économie de minutes CI).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Même seuil que COVERAGE_THRESHOLD dans buildspec.yml (F2 : >= 80 %).
+  COVERAGE_THRESHOLD: '80'
 
 jobs:
-  validate:
+  build-and-test:
+    name: Build & Test
     runs-on: ubuntu-latest
-    
+
+    defaults:
+      run:
+        # Toute l'application vit dans task-manager/ (package.json, Dockerfile,
+        # jest.config.js). Le dépôt n'a plus de manifeste Node à la racine.
+        working-directory: task-manager
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: task-manager/package-lock.json
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: npm ci
 
-      - name: Check application
+      # ----------------------------------------------------------------------
+      # SAST — même outil et même politique que buildspec.yml : Semgrep sort en
+      # erreur (--error) dès qu'un finding de sévérité ERROR est trouvé, ce qui
+      # fait échouer le job et bloque la PR.
+      # ----------------------------------------------------------------------
+      - name: SAST (Semgrep)
         run: |
-          python -m py_compile task-manager/src/app.py
+          pip install semgrep
+          semgrep --config auto --error .
+
+      - name: Unit tests + coverage
+        run: npm test
+
+      - name: Enforce coverage threshold
+        run: |
+          COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
+          echo "Couverture mesurée : ${COVERAGE}% (seuil : ${COVERAGE_THRESHOLD}%)"
+          if [ "$(echo "$COVERAGE < $COVERAGE_THRESHOLD" | bc -l)" -eq 1 ]; then
+            echo "::error::Couverture insuffisante (< ${COVERAGE_THRESHOLD}%)"
+            exit 1
+          fi
+
+      # Rapport JUnit + couverture HTML publiés comme artefacts : US-02 du
+      # cahier des charges (le Tech Lead doit pouvoir consulter la couverture).
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            task-manager/reports/junit.xml
+            task-manager/coverage/lcov-report/
+          if-no-files-found: warn
+
+      # ----------------------------------------------------------------------
+      # Build Docker : valide le Dockerfile multi-stage et mesure la taille de
+      # l'image (cible < 200 Mo, F2). L'image n'est PAS poussée ici — le push
+      # vers ECR reste la responsabilité de CodeBuild.
+      # ----------------------------------------------------------------------
+      - name: Docker build (multi-stage)
+        run: docker build -t taskmanager:ci .
+
+      - name: Check image size
+        run: |
+          SIZE_MB=$(docker image inspect taskmanager:ci --format '{{.Size}}' | awk '{printf "%.0f", $1 / 1024 / 1024}')
+          echo "Taille de l'image : ${SIZE_MB} Mo (cible : < 200 Mo)"
+          if [ "$SIZE_MB" -ge 200 ]; then
+            echo "::warning::L'image dépasse la cible de 200 Mo (${SIZE_MB} Mo)"
+          fi

@@ -45,11 +45,14 @@ cleanup_container() {
 }
 trap cleanup_container EXIT
 
+# npm ci/test tournent dans task-manager/ : c'est là que vivent le seul
+# package.json du dépôt et jest.config.js (le manifeste dupliqué qui existait
+# à la racine a été supprimé lors de l'unification sur une application unique).
 echo "-> npm ci"
-(cd "$ROOT_DIR" && npm ci)
+(cd "$APP_DIR" && npm ci)
 
 echo "-> npm test"
-(cd "$ROOT_DIR" && npm test)
+(cd "$APP_DIR" && npm test)
 echo "✅ Tests unitaires OK"
 echo ""
 
@@ -109,12 +112,18 @@ echo "docker pull $CODEBUILD_IMAGE"
 docker pull "$CODEBUILD_IMAGE"
 
 echo ""
-echo "Exécution de buildspec.yml (source = $APP_DIR)..."
+# La source est la RACINE du dépôt, pas task-manager/ : buildspec.yml résout
+# ses chemins depuis $CODEBUILD_SRC_DIR (il fait lui-même `cd task-manager`, et
+# ses sections reports/artifacts sont préfixées). Le buildspec est désigné
+# explicitement via -b, exactement comme le fait codebuild.yaml avec
+# "BuildSpec: task-manager/buildspec.yml".
+echo "Exécution de buildspec.yml (source = $ROOT_DIR)..."
 set +e
 "$WORKDIR/codebuild_build.sh" \
   -i "$CODEBUILD_IMAGE" \
   -a "$WORKDIR/artifacts" \
-  -s "$APP_DIR"
+  -b "$APP_DIR/buildspec.yml" \
+  -s "$ROOT_DIR"
 BUILD_EXIT_CODE=$?
 set -e
 

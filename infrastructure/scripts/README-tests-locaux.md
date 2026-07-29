@@ -105,9 +105,11 @@ Deuxième volet : tester la partie build applicatif (`codebuild.yaml` +
 - `task-manager/buildspec.yml` — les phases install/pre_build/build/post_build
 - `task-manager/Dockerfile` — build multi-stage de l'image (< 200 Mo)
 - `task-manager/jest.config.js` — configuration Jest (coverage, reporter JUnit)
-- `task-manager/tests/health.test.js` — tests unitaires (healthcheck + `/api/tasks`)
+- `task-manager/tests/` — tests unitaires (`health.test.js`, `tasks.test.js`,
+  `views.test.js`)
 - `task-manager/package.json` / `package-lock.json` — dépendances de l'app,
-  autonomes dans `task-manager/` (voir note en bas de section)
+  **seuls manifestes Node du dépôt** depuis l'unification applicative du
+  2026-07-28 (celui de la racine, qui les dupliquait, a été supprimé)
 
 Comme pour le Test 1, tout se lance avec un seul script :
 
@@ -130,9 +132,10 @@ Passe sans erreur, exactement comme `ecr.yaml` (voir Test 1).
 ## Niveau 1 — vérifier chaque étape manuellement (le plus simple)
 
 ```bash
+cd task-manager             # tout l'applicatif vit ici (package.json inclus)
 npm ci
 npm test                    # doit passer avant de continuer
-docker build -t taskmanager:test task-manager
+docker build -t taskmanager:test .
 docker run --rm -p 3000:3000 taskmanager:test
 curl http://localhost:3000/health   # doit répondre 200
 ```

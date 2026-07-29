@@ -119,7 +119,15 @@ Resources:
           Environment:
             - Name: PROJECT_NAME
               Value: !Ref ProjectName
+            # NODE_ENV est une valeur technique attendue par Node/Express
+            # ("production" active la mise en cache des vues et masque les
+            # stacktraces) : elle ne doit PAS recevoir dev/staging/prod, sinon
+            # elle écrase le `ENV NODE_ENV=production` du Dockerfile et
+            # l'application tourne en mode dégradé jusqu'en production.
             - Name: NODE_ENV
+              Value: production
+            # Le nom de l'environnement du projet est exposé séparément.
+            - Name: APP_ENV
               Value: !Ref Environment
           HealthCheck:
             Command:
