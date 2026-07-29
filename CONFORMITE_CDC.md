@@ -84,7 +84,7 @@ document.
 | Règle du CDC | Statut | Preuve | Commentaire |
 |---|---|---|---|
 | Dockerfile multi-stage, image finale < 200 Mo | ✅ | `task-manager/Dockerfile` | Multi-stage (`build` → `production`), image de prod sans devDependencies, utilisateur non-root, `HEALTHCHECK`. **Taille réellement mesurée : 48 Mo**, soit très en dessous de la cible de 200 Mo (première mesure effective du projet). Le doublon single-stage de la racine a été supprimé. |
-| Tests unitaires ≥80% de couverture, rapport JUnit exporté | ✅ | `task-manager/tests/` (3 fichiers), `task-manager/jest.config.js`, `reports/junit.xml` | 27 tests (Jest + Supertest) couvrant les routes HTML, l'API, le store et le rendu : **100% de couverture** sur les 3 modules de `src/`, sur l'application réellement déployée. `jest.config.js` fixe `collectCoverageFrom: ['src/**/*.js']` — sans ça, un module non testé ne faisait pas baisser la couverture et le gate était contournable. Rapport JUnit généré (`reports/junit.xml`, 27 tests) et publié en artefact par les deux CI. |
+| Tests unitaires ≥80% de couverture, rapport JUnit exporté | ✅ | `task-manager/tests/` (3 fichiers), `task-manager/jest.config.js`, `reports/junit.xml`, `coverage/` | 29 tests (Jest + Supertest) couvrant les routes HTML, l'API, le store et le rendu : **100 % de couverture** (lignes, branches, fonctions) sur les 3 modules de `src/`, c'est-à-dire sur l'application réellement déployée. Trois garde-fous cumulés : `collectCoverageFrom: ['src/**/*.js']` (un module non testé fait baisser la couverture, le gate n'est pas contournable), `coverageThreshold` global à 80 % dans Jest (`npm test` échoue de lui-même, y compris en local), et une revérification explicite du seuil dans **les deux CI** qui affiche la valeur mesurée. Rapports produits : JUnit XML, couverture **HTML** (`lcov-report/`) et couverture **XML Cobertura**, publiés en artefacts par GitHub Actions et par CodeBuild. **Gate vérifié empiriquement** : avec un module non couvert injecté, la couverture tombe à 61,81 %, Jest sort en erreur et le contrôle shell des deux CI bloque également. |
 | Scan SAST bloque le pipeline si vulnérabilités critiques | ⚠️ | `task-manager/buildspec.yml` (phase `pre_build`), `.github/workflows/ci.yml` | Semgrep (`--config auto --error`) avec `exit 1` sur détection, désormais présent **dans les deux CI** avec la même commande (avant : uniquement CodeBuild). Reste ⚠️ pour une seule raison : le gate n'a toujours pas été observé bloquant un build de bout en bout sur un vrai compte AWS. |
 | Image taguée avec le SHA du commit, poussée sur ECR | ✅ | `task-manager/buildspec.yml` | `IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" \| cut -c1-8)`, puis `docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"`. Logique correcte et lisible, jamais exécutée sur un vrai compte AWS. |
 
@@ -119,8 +119,8 @@ document.
 | US-01 (Développeur) | Commit sur `main` → stage Source démarre en <60s | ✅ | Webhook GitHub + `CodeStarSourceConnection`, cf. Tableau 2. Non chronométré empiriquement. |
 | US-01 | Tests échouent → pipeline s'arrête + notification d'échec | ⚠️ | `buildspec.yml` fait bien échouer le build (`exit 1`) sous le seuil de couverture ; la notification SNS sur `FAILED` existe (Tableau 5), mais l'ensemble n'a jamais tourné réellement. |
 | US-01 | Ancienne version dispo pendant le traffic shift | ✅ | `BlueGreenDeploymentConfiguration` (`TerminateBlueInstancesOnDeploymentSuccess`, attente 5 min) dans `pipeline.yml`. |
-| US-02 (Tech Lead) | Rapport HTML de couverture disponible dans les artefacts CodeBuild | ✅ | Jest génère `coverage/lcov-report/` (HTML) et `reports/junit.xml` pour l'application réellement déployée. `buildspec.yml` déclare le rapport JUnit en section `reports`, et `ci.yml` publie les deux en artefacts GitHub (`actions/upload-artifact`). |
-| US-02 | Couverture <80% → build échoue avec message explicite | ✅ | `buildspec.yml` compare `$COVERAGE` à `$COVERAGE_THRESHOLD` et sort en erreur ; message affiché avant `exit 1`. |
+| US-02 (Tech Lead) | Rapport HTML de couverture disponible dans les artefacts CodeBuild | ✅ | `buildspec.yml` archive `coverage/lcov-report/` en `coverage-html.tar.gz` et l'exporte dans les artefacts du build (l'archive est nécessaire : les artefacts sont aplatis par `discard-paths`, imposé par `CodeDeployToECS`). En plus, un report group `code-coverage` au format **COBERTURAXML** fait afficher la couverture directement dans l'onglet Reports de CodeBuild, avec son évolution entre builds. `ci.yml` publie HTML + XML + JUnit en artefacts GitHub. **Correction 2026-07-28** : `buildspec.yml` forçait `--coverageReporters=json-summary --coverageReporters=text`, écrasant la config Jest — CodeBuild ne produisait donc aucun rapport HTML et ce critère était insatisfiable. |
+| US-02 | Couverture <80% → build échoue avec message explicite | ✅ | Double gate : `coverageThreshold` de Jest (message `Jest: "global" coverage threshold for lines (80%) not met: X%`) puis contrôle shell dans les deux CI, qui affiche la couverture mesurée avant `exit 1`. **Vérifié empiriquement** en injectant un module non couvert : couverture tombée à 61,81 %, `npm test` sort en code 1, et le contrôle shell bloque également. |
 | US-03 (DevOps) | Health checks ECS échouent >3 fois/5min → CodeDeploy annule | ⚠️ | `AutoRollbackConfiguration` existe mais s'appuie sur `DEPLOYMENT_FAILURE`, pas sur un compteur de health checks explicite câblé à une alarme — voir Tableau 4. **Correction 2026-07-28** : `taskdef.template.json` (le fichier réellement déployé à chaque exécution du pipeline) ne déclarait aucun `healthCheck` — le health check du conteneur disparaissait donc dès le premier passage du pipeline, privant ce critère de son mécanisme de détection. Les deux task definitions déclarent maintenant le même health check. |
 | US-03 | Rollback terminé → notification "rollback completed" | ❌ | Aucun évènement/état spécifique « rollback completed » n'est distingué dans `PipelineStateChangeRule` (seulement les états génériques de pipeline) — pas de notification dédiée au rollback trouvée. |
 | US-04 (Manager) | Dashboard : durée moyenne, taux de succès 7j, nb déploiements | ✅ | `PipelineDashboard` couvre ces 3 métriques (widgets dédiés). |
@@ -243,6 +243,34 @@ sonne alors que l'auto scaling fait son travail) et `MinCapacity` ≤ `DesiredCo
 
 Reste à vérifier sur un vrai compte AWS : le scaling effectif sous charge, via
 `aws application-autoscaling describe-scaling-activities`.
+
+**2026-07-28 — mise à jour après renforcement des quality gates de couverture (F2 / US-02).** Les tests
+portaient déjà sur l'application réellement déployée depuis l'unification applicative ; cette passe a ajouté
+les rapports manquants et corrigé deux défauts réels :
+
+| Défaut trouvé | Conséquence | Correction |
+|---|---|---|
+| `buildspec.yml` passait `--coverageReporters=json-summary --coverageReporters=text`, ce qui **écrase** la liste de `jest.config.js` | CodeBuild ne générait **jamais** le rapport HTML : US-02 (« un rapport HTML de couverture est disponible dans les artefacts CodeBuild ») était littéralement insatisfiable | Suppression de l'option : `jest.config.js` redevient la source de vérité unique des reporters |
+| Aucun rapport de couverture n'était exporté par CodeBuild | Le Tech Lead n'avait accès à rien, quel que soit le format | Report group `code-coverage` en **COBERTURAXML** (affiché nativement par CodeBuild, avec l'évolution entre builds) + archive `coverage-html.tar.gz` dans les artefacts |
+| Aucun format XML de couverture n'était produit | Rien d'exploitable par CodeBuild, SonarQube, GitLab… | Ajout du reporter `cobertura` → `coverage/cobertura-coverage.xml` |
+| Le seuil n'était appliqué que par du shell dans les deux CI | Un développeur pouvait faire chuter la couverture sans le voir avant la CI | `coverageThreshold` global à 80 % dans Jest : `npm test` échoue de lui-même, y compris en local |
+
+Ajouts de tests : 2 cas qui couvraient un comportement réel jusque-là non exercé — création d'une tâche via
+un **corps JSON** (`express.json()` est monté mais aucun test ne l'empruntait) et 404 sur route inconnue.
+Total : **29 tests**, 100 % de couverture (lignes, branches, fonctions).
+
+**Le gate a été vérifié empiriquement**, ce que les versions précédentes de ce rapport signalaient comme
+jamais démontré : en injectant temporairement un module non testé dans `src/`, la couverture tombe à
+**61,81 %**, Jest sort en code 1 avec un message explicite, et le contrôle shell des deux CI bloque
+également. Le module de test a été retiré, et le projet est revenu à 29 tests / 100 %.
+
+Vérifications complémentaires : XML Cobertura bien formé (3 classes, `line-rate=1`), rapport HTML présent
+(`coverage/lcov-report/index.html`), archivage `tar` fonctionnel (24 Ko), YAML de `ci.yml` et
+`buildspec.yml` valides, `.gitignore` complété pour l'archive générée, et `test2-codebuild.sh` repasse
+(exit 0 : cfn-lint + 29 tests + build Docker + `/health`).
+
+Note : `pytest.ini` et `requirements.txt` ne s'appliquent pas — le projet a été unifié sur Node.js/Express,
+la pile de tests est Jest + Supertest.
 
 ---
 

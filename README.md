@@ -33,16 +33,20 @@ Tout le code applicatif vit dans [`task-manager/`](task-manager/) — c'est la
 | `src/app.js` | Routes Express : `/` (UI HTML), `/add`, `/toggle/:id`, `/delete/:id`, `/api/tasks`, `/health` |
 | `src/tasks.js` | Store des tâches, en mémoire (voir le commentaire d'en-tête pour le pourquoi) |
 | `src/views.js` | Rendu HTML sans moteur de template (zéro dépendance ajoutée) |
-| `tests/` | Tests Jest + Supertest (couverture 100 %, seuil du pipeline : 80 %) |
+| `tests/` | 29 tests Jest + Supertest — couverture 100 %, seuil bloquant à 80 % |
 | `Dockerfile` | Build multi-stage, utilisateur non-root, `HEALTHCHECK` — image mesurée à **48 Mo** (cible < 200 Mo) |
 | `buildspec.yml` | Phases CodeBuild : install → SAST → build → tests + push ECR |
 
 ```bash
 cd task-manager
 npm ci
-npm test        # tests + couverture
+npm test        # tests + couverture (échoue sous 80 %)
 npm start       # http://localhost:3000
 ```
+
+Rapports produits à chaque `npm test` : `coverage/lcov-report/` (HTML),
+`coverage/cobertura-coverage.xml` (XML, lu nativement par CodeBuild) et
+`reports/junit.xml` — tous les trois publiés en artefacts par les deux CI.
 
 Les mêmes quality gates (SAST Semgrep, tests, seuil de couverture 80 %) sont
 exécutés par [`.github/workflows/ci.yml`](.github/workflows/ci.yml) avant merge

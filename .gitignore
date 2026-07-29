@@ -2,9 +2,14 @@
 node_modules/
 **/node_modules/
 
-# Artefacts de test générés par Jest (coverage HTML/JSON/lcov, rapport JUnit)
-# — régénérés à chaque `npm test`, ne doivent pas être versionnés.
+# Artefacts de test générés par Jest (coverage HTML/JSON/lcov/Cobertura XML,
+# rapport JUnit) — régénérés à chaque `npm test`, ne doivent pas être versionnés.
 coverage/
 **/coverage/
 reports/
 **/reports/
+
+# Archive du rapport HTML de couverture, créée par buildspec.yml pour être
+# exportée dans les artefacts CodeBuild (US-02). Générée, donc non versionnée.
+coverage-html.tar.gz
+**/coverage-html.tar.gz

@@ -173,11 +173,28 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
 - `src/views.js` — rendu HTML de la page (portage du template Jinja2), sans
   moteur de template externe : zéro dépendance ajoutée, et échappement HTML
   explicite (Jinja2 échappait automatiquement — sans ça, XSS stockée).
-- `tests/` — 27 tests (Jest + Supertest) répartis en `health.test.js`,
-  `tasks.test.js`, `views.test.js` : **100% de couverture** sur les 3 modules
-  de `src/`. `jest.config.js` fixe désormais `collectCoverageFrom: ['src/**/*.js']`
-  — sans ça, ajouter un module non testé ne faisait pas baisser la couverture
-  et le quality gate à 80% était contournable.
+- `tests/` — 29 tests (Jest + Supertest) répartis en `health.test.js`,
+  `tasks.test.js`, `views.test.js` : **100% de couverture** (lignes, branches,
+  fonctions) sur les 3 modules de `src/`, c'est-à-dire sur l'application
+  réellement déployée. `jest.config.js` fixe `collectCoverageFrom:
+  ['src/**/*.js']` — sans ça, ajouter un module non testé ne faisait pas baisser
+  la couverture et le quality gate à 80% était contournable.
+- **Rapports de couverture HTML + XML (2026-07-28)** : `jest.config.js` est la
+  source de vérité unique des reporters — `text` (logs CI), `json-summary`
+  (lu par les quality gates), `lcov` (→ `coverage/lcov-report/` HTML, US-02) et
+  `cobertura` (→ `coverage/cobertura-coverage.xml`, format XML standard). Un
+  `coverageThreshold` global à 80 % fait échouer `npm test` lui-même, donc y
+  compris en local, avant la CI.
+  Deux vraies lacunes corrigées au passage : (1) `buildspec.yml` passait
+  `--coverageReporters=json-summary --coverageReporters=text`, ce qui
+  **écrasait** la liste de `jest.config.js` — CodeBuild ne produisait donc
+  jamais le rapport HTML, rendant US-02 littéralement insatisfiable ; (2) les
+  rapports de couverture n'étaient pas exportés. Désormais `buildspec.yml`
+  déclare deux report groups (`unit-tests` en JUNITXML et `code-coverage` en
+  **COBERTURAXML**, que CodeBuild sait afficher nativement avec l'évolution
+  d'un build à l'autre) et archive le HTML en `coverage-html.tar.gz` pour
+  l'exporter malgré `discard-paths`. `ci.yml` publie HTML + XML + JUnit en
+  artefacts GitHub et écrit la couverture dans le résumé du job.
 - `Dockerfile` — build multi-stage, image de prod sans devDependencies,
   exécution en utilisateur non-root, `HEALTHCHECK` intégré. **Taille réelle
   mesurée : 48 Mo** (cible < 200 Mo du cahier des charges) — jamais mesurée
@@ -230,7 +247,8 @@ CodePipeline → ECS Fargate) pour l'application Node.js `task-manager`.
 ### Tests locaux exécutés et confirmés (sans accès AWS)
 
 - `cfn-lint` sur `ecr.yaml`, `codebuild.yaml` et `vpc.yml` → passent sans erreur.
-- `npm ci` + `npm test` → 2 tests unitaires passent, 100% de couverture.
+- `npm ci` + `npm test` → 29 tests unitaires passent, 100% de couverture,
+  rapports HTML + Cobertura XML + JUnit générés.
 - `docker build` + `docker run` + `curl /health` → image construite,
   conteneur répond `200 {"status":"ok"}`.
 - Rejeu partiel de `buildspec.yml` via l'agent officiel
@@ -881,7 +899,7 @@ Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
   chemin inexistant (le build aurait échoué avant `install`), le
   `taskdef.template.json` réellement déployé perdait le health check du
   conteneur dont dépend le rollback Blue/Green, et `NODE_ENV` recevait
-  `dev`/`prod` en écrasant le `production` du Dockerfile. Vérifié : 27 tests
+  `dev`/`prod` en écrasant le `production` du Dockerfile. Vérifié : 29 tests
   passent, 100 % de couverture, image mesurée à **48 Mo** (< 200 Mo), CRUD
   complet exercé en direct contre le conteneur (ajout → API → bascule →
   suppression), `HEALTHCHECK` Docker à `healthy`, `cfn-lint` propre, et
@@ -961,3 +979,34 @@ Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
   revalidé (8 widgets). Ordre de déploiement porté à 12 stacks
   (`ecs-autoscaling.yaml` en 11ᵉ : après `ecs-service.yaml` dont elle scale le
   service, et après `pipeline.yml` dont elle importe le topic SNS).
+- 2026-07-28 — **quality gates de couverture renforcés** (F2 / US-02). Les
+  tests portaient déjà sur l'application réellement déployée depuis
+  l'unification ; cette passe a ajouté les rapports manquants et corrigé deux
+  défauts réels. (1) `buildspec.yml` passait
+  `--coverageReporters=json-summary --coverageReporters=text`, ce qui
+  **écrasait** la liste de `jest.config.js` : CodeBuild ne générait donc
+  **jamais** le rapport HTML, et US-02 (« un rapport HTML de couverture est
+  disponible dans les artefacts CodeBuild ») était littéralement
+  insatisfiable — option supprimée, `jest.config.js` redevient la source de
+  vérité unique. (2) Aucun rapport de couverture n'était exporté : ajout d'un
+  report group `code-coverage` au format **COBERTURAXML** (CodeBuild l'affiche
+  nativement avec l'évolution entre builds) et d'une archive
+  `coverage-html.tar.gz` dans les artefacts — nécessaire parce que les
+  artefacts sont aplatis par `discard-paths`, imposé par `CodeDeployToECS`.
+  Ajout du reporter `cobertura` (il n'existait aucun XML de couverture) et
+  d'un `coverageThreshold` global à 80 % dans Jest, pour que `npm test`
+  échoue de lui-même, y compris en local, avant la CI. `ci.yml` publie
+  désormais HTML + XML + JUnit en artefacts et écrit la couverture dans le
+  résumé du job. 2 tests ajoutés sur du comportement réel non exercé
+  jusque-là (création via corps JSON — `express.json()` est monté mais aucun
+  test ne l'empruntait — et 404 sur route inconnue) : **29 tests**, 100 % de
+  couverture.
+  **Le gate a été vérifié empiriquement**, ce qui n'avait jamais été fait : en
+  injectant temporairement un module non testé dans `src/`, la couverture
+  tombe à **61,81 %**, Jest sort en code 1 avec un message explicite, et le
+  contrôle shell des deux CI bloque aussi ; le module a ensuite été retiré et
+  le projet est revenu à 29 tests / 100 %. Vérifié également : XML Cobertura
+  bien formé, HTML présent, archivage `tar` fonctionnel, YAML des deux CI
+  valide, `.gitignore` complété, et `test2-codebuild.sh` repasse (exit 0).
+  Note : `pytest.ini`/`requirements.txt` ne s'appliquent pas, le projet est
+  unifié sur Node.js/Express (Jest + Supertest).

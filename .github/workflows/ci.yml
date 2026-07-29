@@ -68,9 +68,15 @@ jobs:
           pip install semgrep
           semgrep --config auto --error .
 
+      # Pas de --coverageReporters ici : jest.config.js est la source de vérité
+      # (text + json-summary + lcov/HTML + Cobertura XML). Jest échoue déjà
+      # lui-même sous le seuil via coverageThreshold.
       - name: Unit tests + coverage
         run: npm test
 
+      # Revérification explicite du seuil : affiche la valeur mesurée dans le
+      # log et garde le gate même si coverageThreshold disparaissait de la
+      # config Jest.
       - name: Enforce coverage threshold
         run: |
           COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
@@ -79,9 +85,11 @@ jobs:
             echo "::error::Couverture insuffisante (< ${COVERAGE_THRESHOLD}%)"
             exit 1
           fi
+          echo "### Couverture : ${COVERAGE}% (seuil ${COVERAGE_THRESHOLD}%)" >> "$GITHUB_STEP_SUMMARY"
 
-      # Rapport JUnit + couverture HTML publiés comme artefacts : US-02 du
-      # cahier des charges (le Tech Lead doit pouvoir consulter la couverture).
+      # Rapport JUnit + couverture HTML + couverture XML publiés comme
+      # artefacts : US-02 du cahier des charges (le Tech Lead doit pouvoir
+      # consulter la couverture de chaque build).
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,6 +98,8 @@ jobs:
           path: |
             task-manager/reports/junit.xml
             task-manager/coverage/lcov-report/
+            task-manager/coverage/cobertura-coverage.xml
+            task-manager/coverage/lcov.info
           if-no-files-found: warn
 
       # ----------------------------------------------------------------------

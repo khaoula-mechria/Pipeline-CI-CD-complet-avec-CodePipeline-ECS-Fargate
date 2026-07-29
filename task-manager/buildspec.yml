@@ -76,9 +76,18 @@ phases:
     commands:
       - echo "=== POST-BUILD === Exécution des tests unitaires"
       - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
-      # --coverage génère coverage/coverage-summary.json (voir jest.config.js)
-      - npm test -- --coverage --coverageReporters=json-summary --coverageReporters=text
+      # PAS de --coverageReporters ici : ça écraserait la liste de
+      # jest.config.js et supprimerait le rapport HTML et le XML Cobertura
+      # (c'était le cas avant le 2026-07-28 : CodeBuild ne produisait que
+      # json-summary + text, donc US-02 était insatisfiable). jest.config.js
+      # est la source de vérité unique des reporters ET du seuil.
+      - npm test
       - echo "Vérification du seuil de couverture (${COVERAGE_THRESHOLD}%)"
+      # Jest a déjà fait échouer la commande précédente si le seuil n'était pas
+      # tenu (coverageThreshold). Ce second contrôle reste volontairement là :
+      # il AFFICHE la valeur mesurée dans le log de build (US-02, le Tech Lead
+      # doit pouvoir la lire) et sert de garde-fou si le seuil disparaissait de
+      # jest.config.js.
       - |
         COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
         echo "Couverture mesurée : ${COVERAGE}%"
@@ -86,6 +95,13 @@ phases:
           echo "❌ Couverture insuffisante (< ${COVERAGE_THRESHOLD}%) -> échec du pipeline"
           exit 1
         fi
+      # Le rapport HTML est une arborescence de fichiers ; les artefacts de ce
+      # buildspec sont aplatis (discard-paths, imposé par CodeDeployToECS). On
+      # l'archive donc en un seul fichier, téléchargeable depuis les artefacts
+      # du build (US-02).
+      - echo "Archivage du rapport HTML de couverture"
+      - tar -czf coverage-html.tar.gz -C coverage lcov-report
+      - ls -la coverage/cobertura-coverage.xml coverage-html.tar.gz
       - echo "✅ Tests et couverture OK -> push de l'image vers ECR"
       - docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"
       - docker push "$ECR_REPOSITORY_URI:latest"
@@ -126,16 +142,29 @@ phases:
 # Chemins ci-dessous : relatifs à $CODEBUILD_SRC_DIR (racine du dépôt), pas au
 # répertoire de travail des phases.
 reports:
+  # Résultats des tests : CodeBuild affiche le détail par test (succès/échecs,
+  # durées) dans l'onglet "Reports" de la console.
   unit-tests:
     files:
       - 'junit.xml'
     file-format: JUNITXML
     base-directory: 'task-manager/reports'
+  # Couverture de code : CodeBuild sait interpréter nativement le format
+  # Cobertura et affiche le pourcentage de lignes/branches couvertes, avec son
+  # évolution d'un build à l'autre — c'est la réponse la plus directe à US-02
+  # ("visualiser la couverture de tests dans chaque build").
+  code-coverage:
+    files:
+      - 'cobertura-coverage.xml'
+    file-format: COBERTURAXML
+    base-directory: 'task-manager/coverage'
 
 artifacts:
   files:
     - task-manager/imageDetail.json
     - task-manager/taskdef.json
+    # Rapport HTML de couverture, archivé pour survivre à discard-paths.
+    - task-manager/coverage-html.tar.gz
   # Aplatit les chemins : l'action CodeDeployToECS attend imageDetail.json et
   # taskdef.json à la racine de l'artefact de build.
   discard-paths: yes

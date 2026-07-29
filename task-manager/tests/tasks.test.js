@@ -68,6 +68,28 @@ describe('POST /add', () => {
 
     expect(tasks.list()[0].priority).toBe(tasks.DEFAULT_PRIORITY);
   });
+
+  // app.js monte express.json() en plus de express.urlencoded() : un client
+  // d'API (et pas seulement le formulaire HTML) doit donc pouvoir créer une
+  // tâche. Ce chemin n'était couvert par aucun test.
+  it('also accepts a JSON body, not just an HTML form', async () => {
+    const response = await request(app)
+      .post('/add')
+      .send({ title: 'Créée en JSON', priority: 'Faible' });
+
+    expect(response.statusCode).toBe(302);
+    expect(tasks.list()[0]).toMatchObject({ title: 'Créée en JSON', priority: 'Faible' });
+  });
+});
+
+describe('unknown routes', () => {
+  // Documente le comportement actuel : pas de handler d'erreur personnalisé,
+  // c'est le 404 par défaut d'Express qui s'applique.
+  it('responds with 404', async () => {
+    const response = await request(app).get('/n-existe-pas');
+
+    expect(response.statusCode).toBe(404);
+  });
 });
 
 describe('POST /toggle/:id', () => {
