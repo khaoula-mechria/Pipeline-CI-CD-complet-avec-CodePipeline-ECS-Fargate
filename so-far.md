@@ -767,10 +767,10 @@ tâches monte, puis redescend une fois la charge retombée.
   refactor — `cfn-lint` sortant en code 4 sur les warnings W6001 sous `set -e`
   — a été corrigé le 2026-07-28 ; il reste à couvrir les 4 nouvelles stacks.)
 - Les gaps de conformité listés dans `CONFORMITE_CDC.md` encore ouverts (tous
-  mineurs désormais) : rétention manquante sur le log group CodeBuild, pas de
-  notification spécifique « rollback completed », pas de stage `ManualApproval`,
-  traffic shift en rampe linéaire au lieu des paliers 10/50/100 %, protection de
-  branche GitHub à activer côté réglages du dépôt.
+  mineurs désormais) : pas de notification spécifique « rollback completed »,
+  pas de stage `ManualApproval`, traffic shift en rampe linéaire au lieu des
+  paliers 10/50/100 %, protection de branche GitHub à activer côté réglages du
+  dépôt.
 - L'application ne LIT encore aucun des secrets injectés (`DB_USERNAME`,
   `DB_PASSWORD`, `API_KEY` sont disponibles dans le conteneur mais inutilisés) :
   normal, le store est en mémoire et il n'y a pas encore de base de données ni
@@ -1086,3 +1086,21 @@ Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
   pousser `latest` uniquement au premier build. C'est un choix de stratégie de
   tag, pas un détail d'implémentation — d'où l'absence de correction unilatérale
   ici.
+- 2026-07-28 — **rétention 30 jours sur les logs CodeBuild** (F4). `codebuild.yaml`
+  ne faisait que *désigner* un nom de log group dans
+  `LogsConfig.CloudWatchLogs.GroupName` — la ressource n'existait nulle part.
+  CodeBuild l'aurait donc créée lui-même au premier build, avec la rétention
+  par défaut « Never expire » : les logs se seraient accumulés indéfiniment,
+  et la facture avec. Ajout d'une ressource `AWS::Logs::LogGroup`
+  (`BuildLogGroup`, `RetentionInDays: 30`, même valeur que le log group
+  applicatif ECS), référencée via `GroupName: !Ref BuildLogGroup` plutôt qu'un
+  `!Sub` dupliqué : `!Ref` sur un log group renvoie son nom, et la référence
+  crée en prime la dépendance CloudFormation, donc le groupe (avec sa
+  rétention) est garanti créé avant le projet. Nouvel export
+  `-codebuild-loggroup-name`. La policy IAM existante couvre toujours ce
+  groupe (motif `/aws/codebuild/${ProjectName}-${Environment}*`, vérifié).
+  Note opérationnelle ajoutée en commentaire : sur une stack DÉJÀ déployée où
+  des builds ont tourné, CodeBuild aura créé le groupe tout seul et
+  CloudFormation échouera sur « already exists » — il faudra le supprimer ou
+  l'importer au préalable. Sur un premier déploiement, rien à faire.
+  `cfn-lint` propre.

@@ -138,6 +138,32 @@ Resources:
                   - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-pipeline-notifications'
 
   # ------------------------------------------------------------------
+  # LOG GROUP CLOUDWATCH DES BUILDS
+  #
+  # F4 du cahier des charges : "les logs de build et d'application sont
+  # centralisés dans CloudWatch Logs avec une rétention de 30 jours".
+  #
+  # Déclaré explicitement ici, et PAS laissé à la création automatique par
+  # CodeBuild : un log group créé implicitement au premier build a une
+  # rétention "Never expire" (les logs s'accumulent indéfiniment, et la
+  # facture avec). C'était le cas avant le 2026-07-28 — LogsConfig ne faisait
+  # que désigner un nom de groupe, sans jamais créer la ressource.
+  #
+  # NOTE POUR UN DÉPLOIEMENT SUR UNE STACK DÉJÀ EXISTANTE : si des builds ont
+  # déjà tourné, CodeBuild a créé ce log group tout seul et CloudFormation
+  # échouera avec "already exists". Il faut alors soit le supprimer avant
+  # (`aws logs delete-log-group`), soit l'importer dans la stack. Sur un
+  # premier déploiement, rien à faire.
+  # ------------------------------------------------------------------
+  BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${ProjectName}-${Environment}'
+      # Rétention 30 jours : F4 du cahier des charges (même valeur que le log
+      # group applicatif ECS dans ecs-task-definition.yaml).
+      RetentionInDays: 30
+
+  # ------------------------------------------------------------------
   # PROJET CODEBUILD
   # ------------------------------------------------------------------
   BuildProject:
@@ -232,7 +258,11 @@ Resources:
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
-          GroupName: !Sub '/aws/codebuild/${ProjectName}-${Environment}'
+          # !Ref sur un AWS::Logs::LogGroup renvoie son NOM — exactement ce
+          # qu'attend GroupName. Passer par la référence plutôt que par un
+          # !Sub dupliqué crée en plus la dépendance CloudFormation : le log
+          # group (avec sa rétention) est garanti créé avant le projet.
+          GroupName: !Ref BuildLogGroup
 
       TimeoutInMinutes: 15
 
@@ -256,3 +286,9 @@ Outputs:
   ServiceRoleArn:
     Description: ARN du rôle IAM utilisé par CodeBuild
     Value: !GetAtt CodeBuildServiceRole.Arn
+
+  BuildLogGroupName:
+    Description: Nom du Log Group CloudWatch des builds (rétention 30 jours)
+    Value: !Ref BuildLogGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-codebuild-loggroup-name'
