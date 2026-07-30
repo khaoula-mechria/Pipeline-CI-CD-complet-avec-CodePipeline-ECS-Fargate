@@ -107,6 +107,36 @@ Resources:
                   - !ImportValue
                     'Fn::Sub': '${ProjectName}-${Environment}-ecr-arn'
 
+              # US-05 : buildspec.yml lit le résultat du scan ECR après le push
+              # (déclenché par ScanOnPush, cf. ecr.yaml) pour bloquer sur
+              # CRITICAL et notifier sur HIGH. Sans cette permission, l'appel
+              # describe-image-scan-findings échoue et le build s'arrête en
+              # fail-safe.
+              - Sid: EcrReadScanFindings
+                Effect: Allow
+                Action:
+                  - ecr:DescribeImageScanFindings
+                Resource:
+                  - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-ecr-arn'
+
+              # US-05 : notification SNS du résultat du scan (bloquant sur
+              # CRITICAL, informatif sur HIGH).
+              #
+              # ARN construit par convention de nommage plutôt qu'importé de
+              # pipeline.yml : cette stack se déploie en 5e position, bien AVANT
+              # pipeline.yml (10e) qui crée le topic. Un Fn::ImportValue créerait
+              # une dépendance circulaire dans l'ordre de déploiement. Le nom du
+              # topic est déterministe (TopicName dans pipeline.yml) et un ARN
+              # SNS n'a pas de suffixe aléatoire, contrairement à Secrets
+              # Manager : la convention est donc fiable ici.
+              - Sid: PublishScanNotifications
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-pipeline-notifications'
+
   # ------------------------------------------------------------------
   # PROJET CODEBUILD
   # ------------------------------------------------------------------
@@ -179,6 +209,13 @@ Resources:
           - Name: API_KEY_SECRET_ARN
             Value: !ImportValue
               'Fn::Sub': '${ProjectName}-${Environment}-api-key-secret-arn'
+          # Topic de notification du pipeline, utilisé par buildspec.yml pour
+          # publier le résultat du scan ECR (US-05). Construit par convention
+          # de nommage et NON importé de pipeline.yml : voir la justification
+          # sur le statement IAM PublishScanNotifications ci-dessus (cette
+          # stack se déploie avant celle qui crée le topic).
+          - Name: PIPELINE_NOTIFICATIONS_TOPIC_ARN
+            Value: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-pipeline-notifications'
 
       # Pas d'artefact S3 : le "livrable" du build est l'image poussée
       # vers ECR directement dans buildspec.yml (post_build).

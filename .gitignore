@@ -18,6 +18,13 @@ coverage-html.tar.gz
 semgrep-report.json
 **/semgrep-report.json
 
+# Résultat du scan de vulnérabilités ECR (US-05), produit par buildspec.yml
+# après le push de l'image.
+ecr-scan-findings.json
+**/ecr-scan-findings.json
+scan-wait.err
+**/scan-wait.err
+
 # Fichiers de déploiement GÉNÉRÉS au build par buildspec.yml (à partir de
 # taskdef.template.json, lui bien versionné) et par le dry-run de ci.yml.
 # Ne jamais les committer : ils contiennent des valeurs propres à un compte AWS

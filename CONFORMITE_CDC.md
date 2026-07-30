@@ -59,7 +59,7 @@ document.
 | 1 | AWS CodePipeline | ✅ | `infrastructure/cloudformation/pipeline.yml` | 3 stages Source (CodeStarSourceConnection) → Build (CodeBuild) → Deploy (`CodeDeployToECS`). Jamais exécuté réellement. |
 | 2 | Amazon ECS Fargate | ✅ | `ecs-cluster.yaml`, `ecs-service.yaml`, `ecs-task-definition.yaml` | `RequiresCompatibilities: FARGATE`, `DeploymentController: CODE_DEPLOY`. Jamais déployé réellement (ECS = Pro-only sur LocalStack). |
 | 3 | AWS CodeBuild | ✅ | `infrastructure/cloudformation/codebuild.yaml`, `task-manager/buildspec.yml` | Projet + rôle IAM + buildspec complet (SAST, tests, push ECR). Le rejeu local via l'agent officiel ne va jamais jusqu'au bout (pull d'image trop lent). |
-| 4 | Amazon ECR | ✅ | `infrastructure/cloudformation/ecr.yaml` | Repository privé, `ScanOnPush: true`, lifecycle policy 10 images. Testé de bout en bout sur LocalStack. |
+| 4 | Amazon ECR | ✅ | `infrastructure/cloudformation/ecr.yaml`, `task-manager/buildspec.yml` | Repository privé, `ScanOnPush: true`, lifecycle policy 10 images. Testé de bout en bout sur LocalStack. Le résultat du scan est désormais **exploité** par le buildspec : blocage sur CRITICAL, notification SNS sur HIGH (US-05). |
 | 5 | AWS CloudFormation | ✅ | `infrastructure/cloudformation/*.yaml` | 12 templates non vides (`parameters.json` est vide, voir gaps). |
 | 6 | Docker | ✅ | `task-manager/Dockerfile` | Dockerfile unique, multi-stage, non-root, `HEALTHCHECK`. Le doublon single-stage de la racine a été supprimé. Image mesurée : **48 Mo**. |
 | 7 | GitHub Actions | ✅ | `.github/workflows/ci.yml` | **2 jobs parallèles.** `app` rejoue les gates de `buildspec.yml` sur la même application (npm ci, SAST Semgrep, tests Jest, seuil 80 %, build Docker + taille) et publie JUnit + couverture HTML/XML + rapport SAST en artefacts. `infra` rejoue la validation statique des scripts locaux : `cfn-lint` sur les 12 templates, validité de `appspec.yaml`/`buildspec.yml`/`taskdef.template.json`, et **dry-run du rendu de `taskdef.json`**. Ne pousse rien vers AWS (rôle volontairement limité à la protection de branche). |
@@ -125,8 +125,8 @@ document.
 | US-03 | Rollback terminé → notification "rollback completed" | ❌ | Aucun évènement/état spécifique « rollback completed » n'est distingué dans `PipelineStateChangeRule` (seulement les états génériques de pipeline) — pas de notification dédiée au rollback trouvée. |
 | US-04 (Manager) | Dashboard : durée moyenne, taux de succès 7j, nb déploiements | ✅ | `PipelineDashboard` couvre ces 3 métriques (widgets dédiés). |
 | US-04 | Alarme >15min → email d'alerte | ⚠️ | Alarme présente et correcte (Tableau 5), mais l'abonnement email (`AlarmEmailSubscription`) est conditionnel à un paramètre `AlarmEmail` vide par défaut — sans le renseigner au déploiement, aucun email ne part réellement. |
-| US-05 (Développeur) | Scan ECR bloque le déploiement si vulnérabilités CRITICAL | ❌ | `ecr.yaml` active bien `ScanOnPush: true`, mais **aucune étape du pipeline (buildspec, CodePipeline) ne lit ni ne réagit aux résultats de ce scan** — le scan a lieu mais rien ne le consomme pour bloquer un déploiement. |
-| US-05 | Vulnérabilités HIGH → notification sans bloquer | ❌ | Idem — aucune intégration trouvée entre le scan ECR et SNS/CloudWatch. |
+| US-05 (Développeur) | Scan ECR bloque le déploiement si vulnérabilités CRITICAL | ✅ | `task-manager/buildspec.yml` (phase `post_build`, après `docker push`) + `codebuild.yaml` (IAM). Le scan est déclenché par `ScanOnPush` (`ecr.yaml`) ; le build attend sa fin (`aws ecr wait image-scan-complete` — sans quoi `describe-image-scan-findings` renverrait un scan `IN_PROGRESS` et donc zéro finding, laissant passer le gate à tort), puis lit `findingSeverityCounts`. **CRITICAL > 0 → `exit 1`** : le stage Build échoue, donc le stage Deploy n'est jamais atteint et le déploiement est bien bloqué. Si le scan ne se termine pas, le build échoue aussi (fail-safe : sans résultat, l'absence de CRITICAL ne peut pas être garantie). Le rôle CodeBuild a reçu `ecr:DescribeImageScanFindings`. Logique de décision vérifiée sur 4 payloads de scan représentatifs. |
+| US-05 | Vulnérabilités HIGH → notification sans bloquer | ✅ | Même étape : **HIGH > 0 (sans CRITICAL) → `aws sns publish`** vers le topic de notification du pipeline, puis le build **continue**. Le message contient l'image, le commit et le décompte par sévérité. L'ARN du topic est construit par convention de nommage (et non importé) car `codebuild.yaml` se déploie en 5ᵉ position, avant `pipeline.yml` (10ᵉ) qui crée le topic — un `Fn::ImportValue` créerait une dépendance circulaire. Le rôle CodeBuild a reçu `sns:Publish`, scopé à ce seul topic. La publication est best-effort : son échec n'interrompt pas le build. |
 
 ---
 
@@ -154,7 +154,6 @@ document.
 | 🔴 Bloquant | Déploiement AWS réel | Aucune ressource n'a jamais été déployée sur un vrai compte AWS. CodeBuild, ALB, ECS, CodeDeploy et CodePipeline eux-mêmes (11 des ~17 ressources de `pipeline.yml`) ne sont validés que par `cfn-lint`, jamais exécutés. |
 | 🟡 Mineur | Traffic shift non conforme aux paliers | Créer un `AWS::CodeDeploy::DeploymentConfig` personnalisé pour coller aux paliers 10 % → 50 % → 100 % du CDC, au lieu de la rampe linéaire prédéfinie actuelle. |
 | 🟡 Mineur | Rétention CloudWatch Logs CodeBuild | Ajouter une ressource `AWS::Logs::LogGroup` avec `RetentionInDays: 30` pour le log group CodeBuild dans `codebuild.yaml`. |
-| 🟡 Mineur | Scan ECR non exploité | Ajouter une étape (buildspec ou action CodePipeline) qui lit le résultat du scan ECR (`ScanOnPush`) et bloque sur CRITICAL / notifie sur HIGH (US-05). |
 | 🟡 Mineur | Notification "rollback completed" | Ajouter un évènement/état distinct pour notifier spécifiquement la fin d'un rollback (US-03), au-delà des états génériques déjà notifiés. |
 | 🟡 Mineur | Pas de stage d'approbation | Ajouter un stage `ManualApproval` dans `pipeline.yml` pour que l'état « approval pending » de F4 ait une source (la permission `sns:Publish` est déjà prévue dans `iam.yaml`). |
 | 🟡 Mineur | `parameters.json` vide | Renseigner ou supprimer `infrastructure/cloudformation/parameters.json`. |
@@ -305,6 +304,32 @@ Vérifications : YAML du workflow valide (2 jobs, 9 + 6 étapes), et **chaque no
 localement** — `cfn-lint` sur les 12 templates avec le flag (exit 0), validation des manifestes (port 3000,
 3 secrets, `healthCheck` présent), dry-run du rendu (`taskdef.json` valide, seul `<IMAGE1_NAME>` subsistant),
 29 tests / 100 % de couverture, et les 4 artefacts de couverture présents.
+
+---
+
+**2026-07-28 — mise à jour après exploitation du scan ECR (US-05).** Le scan tournait déjà (`ScanOnPush`
+activé dans `ecr.yaml`) mais **rien ne lisait ses résultats** : c'était le dernier écart fonctionnel du
+rapport. `buildspec.yml` appelle maintenant `describe-image-scan-findings` juste après le `docker push`,
+et applique les deux règles de US-05 : **CRITICAL → `exit 1`** (le stage Build échoue, donc Deploy n'est
+jamais atteint) et **HIGH → notification SNS sans blocage**.
+
+| Décision | Raison |
+|---|---|
+| `aws ecr wait image-scan-complete` avant de lire les findings | `ScanOnPush` est **asynchrone**. Sans cette attente, `describe-image-scan-findings` renvoie un scan encore `IN_PROGRESS` avec zéro finding — le gate passerait systématiquement à tort, en donnant l'illusion de fonctionner. |
+| Échec du build si le scan ne se termine pas | Fail-safe : sans résultat de scan, l'absence de vulnérabilité CRITICAL ne peut pas être *garantie*. Le statut réel du scan est affiché dans le log pour diagnostiquer. |
+| ARN du topic SNS construit par convention, pas importé | `codebuild.yaml` se déploie en 5ᵉ position, `pipeline.yml` (qui crée le topic) en 10ᵉ. Un `Fn::ImportValue` créerait une dépendance circulaire dans l'ordre de déploiement. Le `TopicName` est déterministe et un ARN SNS n'a pas de suffixe aléatoire — contrairement à Secrets Manager, la convention est fiable ici. |
+| Publication SNS best-effort | Un échec de notification ne doit ni masquer un échec de build (cas CRITICAL), ni faire échouer un build sain (cas HIGH). |
+| Notification envoyée aussi pour CRITICAL | La règle EventBridge notifie déjà l'échec du pipeline, mais sans dire **pourquoi**. Le message du scan porte l'image, le commit et le décompte par sévérité. |
+
+IAM : le rôle CodeBuild a reçu `ecr:DescribeImageScanFindings` (scopé au repository importé) et `sns:Publish`
+(scopé au seul topic du projet). `ecr-scan-findings.json` est exporté en artefact du build, y compris quand
+le build a été bloqué, pour pouvoir analyser les CVE.
+
+Vérification : la logique de décision a été rejouée sur 4 payloads représentatifs de
+`describe-image-scan-findings` — aucun finding, HIGH seul, CRITICAL présent, et `findingSeverityCounts`
+absent. Les 4 se comportent conformément à US-05 (respectivement : passe sans notification, passe avec
+notification, bloque avec notification, passe sans erreur malgré la structure vide). `cfn-lint` propre sur
+`codebuild.yaml`, YAML du buildspec valide.
 
 ---
 

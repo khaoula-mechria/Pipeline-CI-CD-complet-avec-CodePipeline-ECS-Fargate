@@ -767,11 +767,10 @@ tâches monte, puis redescend une fois la charge retombée.
   refactor — `cfn-lint` sortant en code 4 sur les warnings W6001 sous `set -e`
   — a été corrigé le 2026-07-28 ; il reste à couvrir les 4 nouvelles stacks.)
 - Les gaps de conformité listés dans `CONFORMITE_CDC.md` encore ouverts (tous
-  mineurs désormais) : rétention manquante sur le log group CodeBuild, scan ECR
-  non exploité par le pipeline, pas de notification spécifique
-  « rollback completed », pas de stage `ManualApproval`, traffic shift en rampe
-  linéaire au lieu des paliers 10/50/100 %, protection de branche GitHub à
-  activer côté réglages du dépôt.
+  mineurs désormais) : rétention manquante sur le log group CodeBuild, pas de
+  notification spécifique « rollback completed », pas de stage `ManualApproval`,
+  traffic shift en rampe linéaire au lieu des paliers 10/50/100 %, protection de
+  branche GitHub à activer côté réglages du dépôt.
 - L'application ne LIT encore aucun des secrets injectés (`DB_USERNAME`,
   `DB_PASSWORD`, `API_KEY` sont disponibles dans le conteneur mais inutilisés) :
   normal, le store est en mémoire et il n'y a pas encore de base de données ni
@@ -1045,3 +1044,45 @@ Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
   Vérifié : YAML du workflow valide (2 jobs, 9 + 6 étapes) et **chaque
   nouvelle étape rejouée localement** (cfn-lint exit 0 sur les 12 templates,
   manifestes validés, dry-run du taskdef propre, 29 tests / 100 %).
+- 2026-07-28 — **scan ECR exploité** (US-05), dernier écart fonctionnel du
+  rapport de conformité. Le scan tournait déjà (`ScanOnPush` activé dans
+  `ecr.yaml`) mais **rien ne lisait ses résultats**. `buildspec.yml` appelle
+  maintenant `describe-image-scan-findings` juste après le `docker push` et
+  applique les deux règles de US-05 : **CRITICAL → `exit 1`** (le stage Build
+  échoue, donc le stage Deploy n'est jamais atteint : le déploiement est bien
+  bloqué) et **HIGH → notification SNS sans blocage**.
+  Piège principal, traité explicitement : `ScanOnPush` est **asynchrone**. Sans
+  `aws ecr wait image-scan-complete`, `describe-image-scan-findings` renvoie un
+  scan encore `IN_PROGRESS` avec zéro finding — le gate passerait
+  systématiquement à tort tout en donnant l'illusion de marcher. Si le scan ne
+  se termine pas, le build échoue en fail-safe (sans résultat, l'absence de
+  CRITICAL ne peut pas être garantie) et le statut réel du scan est affiché.
+  IAM : le rôle CodeBuild a reçu `ecr:DescribeImageScanFindings` (scopé au
+  repository importé) et `sns:Publish` (scopé au seul topic du projet). L'ARN du
+  topic est construit par **convention de nommage** et non importé, parce que
+  `codebuild.yaml` se déploie en 5e position et `pipeline.yml` — qui crée le
+  topic — en 10e : un `Fn::ImportValue` créerait une dépendance circulaire dans
+  l'ordre de déploiement. Contrairement à Secrets Manager, un ARN SNS n'a pas de
+  suffixe aléatoire, la convention est donc fiable ici.
+  `ecr-scan-findings.json` est exporté en artefact du build (y compris quand le
+  build a été bloqué) pour pouvoir analyser les CVE. `.gitignore` complété.
+  Vérifié : la logique de décision a été rejouée sur 4 payloads représentatifs
+  de `describe-image-scan-findings` — aucun finding, HIGH seul, CRITICAL
+  présent, et `findingSeverityCounts` absent — et les 4 se comportent
+  conformément à US-05. `cfn-lint` propre sur `codebuild.yaml`, YAML du
+  buildspec valide.
+
+  **⚠️ Problème SÉPARÉ découvert en travaillant sur ce bloc, NON corrigé** (il
+  demande un arbitrage) : `ecr.yaml` déclare `ImageTagMutability: IMMUTABLE`,
+  alors que `buildspec.yml` pousse `:latest` à **chaque** build. ECR refuse de
+  réassigner un tag existant à une nouvelle image : le tout premier build
+  passera, mais **tous les suivants échoueront** sur
+  `docker push ...:latest` (le tag `latest` existe déjà et pointerait vers un
+  autre digest). Trois options : (a) ne plus pousser `latest` et ne garder que
+  le tag SHA — le plus cohérent avec IMMUTABLE, mais il faut donner à
+  `ecs-task-definition.yaml` une autre image de bootstrap que
+  `<repo>:latest` ; (b) passer le repository en `MUTABLE`, ce qui annule la
+  garantie d'immutabilité revendiquée en commentaire dans `ecr.yaml` ; (c)
+  pousser `latest` uniquement au premier build. C'est un choix de stratégie de
+  tag, pas un détail d'implémentation — d'où l'absence de correction unilatérale
+  ici.
