@@ -180,9 +180,18 @@ Resources:
                       - ecs.amazonaws.com
                       - ecs-tasks.amazonaws.com
 
-              # Notifications de changement d'état du pipeline (SUCCESS,
-              # FAILURE, APPROVAL_PENDING...) vers le topic SNS documenté
-              # dans l'architecture. Restreint par convention de nommage.
+              # Publication sur le topic SNS du projet, restreinte par
+              # convention de nommage.
+              #
+              # C'est CETTE permission qu'utilise le stage Approval de
+              # pipeline.yml : quand le pipeline se met en attente, CodePipeline
+              # publie lui-même le message d'approbation (avec le lien) via le
+              # rôle de service, grâce au NotificationArn de l'action. Le
+              # statement existait déjà en prévision de ce stage — il est
+              # maintenant réellement utilisé.
+              #
+              # Aucune modification de la policy du topic SNS n'est nécessaire :
+              # en intra-compte, cette autorisation identity-based suffit.
               - Sid: PublishPipelineNotifications
                 Effect: Allow
                 Action:
