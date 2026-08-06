@@ -4,7 +4,36 @@ Description: >
   Registre Amazon ECR privé pour le projet (CI/CD AWS).
   - Stocke les images Docker construites par CodeBuild.
   - Scan on push activé (détection de vulnérabilités à chaque poussée).
-  - Lifecycle Policy : ne conserve que les 10 dernières images (optimisation des coûts).
+  - Lifecycle Policy : expire les images untagged (1 jour) puis ne conserve
+    que les N dernières images (optimisation des coûts).
+
+# ------------------------------------------------------------------
+# INTERFACE CONSOLE
+# Regroupe les paramètres quand le template est déployé depuis la
+# console CloudFormation (purement cosmétique).
+# ------------------------------------------------------------------
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Nommage
+        Parameters:
+          - ProjectName
+          - Environment
+      - Label:
+          default: Cycle de vie des images
+        Parameters:
+          - MaxImageCount
+          - UntaggedRetentionDays
+    ParameterLabels:
+      ProjectName:
+        default: Nom du projet (minuscules)
+      Environment:
+        default: Environnement cible
+      MaxImageCount:
+        default: Nombre d'images à conserver
+      UntaggedRetentionDays:
+        default: Rétention des images untagged (jours)
 
 # ------------------------------------------------------------------
 # PARAMÈTRES
@@ -18,7 +47,13 @@ Parameters:
     Description: >
       Nom du projet, utilisé comme préfixe de nommage des ressources.
       Doit être en minuscules (contrainte ECR).
-    AllowedPattern: '^[a-z][a-z0-9-]*$'
+    # Le motif interdit le tiret final et impose de commencer par une lettre.
+    AllowedPattern: '^[a-z]([a-z0-9-]*[a-z0-9])?$'
+    MinLength: 2
+    MaxLength: 30
+    ConstraintDescription: >
+      2 à 30 caractères, minuscules / chiffres / tirets, doit commencer par
+      une lettre et ne pas terminer par un tiret.
 
   Environment:
     Type: String
@@ -32,9 +67,20 @@ Parameters:
   MaxImageCount:
     Type: Number
     Default: 10
+    MinValue: 1
+    MaxValue: 100
     Description: >
       Nombre maximum d'images conservées par la Lifecycle Policy.
       Au-delà, les images les plus anciennes sont automatiquement supprimées.
+
+  UntaggedRetentionDays:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 30
+    Description: >
+      Durée de conservation des images sans tag (layers laissés par des
+      builds échoués/interrompus) avant expiration automatique.
 
 # ------------------------------------------------------------------
 # RESSOURCES
@@ -42,19 +88,49 @@ Parameters:
 Resources:
 
   # Le repository ECR lui-même.
+  #
+  # AWS::ECR::Repository crée TOUJOURS un registre PRIVÉ : il n'existe
+  # aucune option "public" ici. Un registre public serait une ressource
+  # d'un autre type (AWS::ECR::PublicRepository).
   AppRepository:
     Type: AWS::ECR::Repository
+
+    # CloudFormation ne peut PAS supprimer un repository ECR non vide :
+    # la suppression de stack échouerait en DELETE_FAILED dès qu'une image
+    # est présente. On retient donc explicitement la ressource, ce qui
+    # protège aussi les artefacts en prod.
+    # Pour un stack dev jetable : passer DeletionPolicy à "Delete" et
+    # EmptyOnDelete à true ci-dessous.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
     Properties:
       RepositoryName: !Sub '${ProjectName}-${Environment}'
 
+      # Explicite : ne pas vider le repository automatiquement à la
+      # suppression (cohérent avec DeletionPolicy: Retain).
+      EmptyOnDelete: false
+
       # IMMUTABLE = un tag une fois poussé ne peut plus être écrasé.
-      # Bonne pratique CI/CD : évite qu'un tag "latest" ou un SHA soit
-      # remplacé silencieusement par une autre image plus tard.
+      # Bonne pratique CI/CD : évite qu'un SHA soit remplacé silencieusement
+      # par une autre image plus tard.
+      #
+      # /!\ CONSÉQUENCE SUR LE PIPELINE : avec IMMUTABLE, un second
+      # "docker push <repo>:latest" échoue avec ImageTagAlreadyExistsException.
+      # Le buildspec doit donc tagger par SHA de commit / numéro de build
+      # (ex: :$CODEBUILD_RESOLVED_SOURCE_VERSION) et NE PAS republier "latest".
+      # Si un tag mouvant "latest" est indispensable, repasser en MUTABLE.
       ImageTagMutability: IMMUTABLE
 
       # Critère d'acceptation : scan on push activé.
       # ECR lance automatiquement un scan de vulnérabilités (Basic Scanning,
       # basé sur la base CVE) à chaque "docker push".
+      #
+      # NOTE : si le registre du compte est configuré en "Enhanced scanning"
+      # (Amazon Inspector), ce réglage par repository est ignoré — le scan
+      # est alors piloté au niveau registre par
+      # AWS::ECR::RegistryScanningConfiguration (une seule par compte/région,
+      # donc à gérer dans un stack séparé, pas ici).
       ImageScanningConfiguration:
         ScanOnPush: true
 
@@ -63,16 +139,33 @@ Resources:
       EncryptionConfiguration:
         EncryptionType: AES256
 
-      # Critère d'acceptation : Lifecycle Policy, garder seulement les
-      # N dernières images. Ici on cible TOUTES les images ("tagStatus: any"),
-      # quel que soit leur tag, pour rester simple pour le MVP.
+      # Critère d'acceptation : Lifecycle Policy.
+      # Règle 1  : expire vite les images untagged (builds échoués), sinon
+      #            elles consomment du stockage ET un des N emplacements.
+      # Règle 10 : ne conserve que les N dernières images.
+      #            Une règle "tagStatus: any" doit obligatoirement porter le
+      #            rulePriority le PLUS ÉLEVÉ de la policy — d'où le 10, qui
+      #            laisse de la place pour insérer des règles intermédiaires.
       LifecyclePolicy:
         LifecyclePolicyText: !Sub |
           {
             "rules": [
               {
                 "rulePriority": 1,
-                "description": "Garder uniquement les ${MaxImageCount} dernières images",
+                "description": "Expirer les images untagged apres ${UntaggedRetentionDays} jour(s)",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": ${UntaggedRetentionDays}
+                },
+                "action": {
+                  "type": "expire"
+                }
+              },
+              {
+                "rulePriority": 10,
+                "description": "Garder uniquement les ${MaxImageCount} dernieres images",
                 "selection": {
                   "tagStatus": "any",
                   "countType": "imageCountMoreThan",
@@ -86,27 +179,46 @@ Resources:
           }
 
       # Politique d'accès au niveau du repository (resource-based policy).
-      # Ici : autorise uniquement les principals du compte AWS courant
-      # à push/pull. Le futur rôle IAM de CodeBuild devra avoir en plus
-      # une IAM policy identity-based avec les mêmes actions (les deux
-      # sont nécessaires : la resource policy ET la identity policy).
+      #
+      # À savoir : le statement "Allow" au principal <account>:root ne donne
+      # aucun droit supplémentaire par rapport aux IAM policies identity-based
+      # du compte (les principals du compte propriétaire sont déjà autorisés
+      # via leur IAM policy). Il n'est réellement nécessaire que pour un accès
+      # CROSS-ACCOUNT. On le garde pour rendre l'intention explicite.
+      # Le rôle IAM de CodeBuild doit de toute façon porter les mêmes actions
+      # dans sa policy identity-based, plus ecr:GetAuthorizationToken (action
+      # de niveau compte, non exprimable dans une resource policy).
+      #
+      # Le statement "Deny" ci-dessous, lui, ajoute un vrai contrôle :
+      # il refuse tout accès non chiffré en transit.
       RepositoryPolicyText:
         Version: '2012-10-17'
         Statement:
           - Sid: AllowAccountPushPull
             Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
             Action:
               - ecr:GetDownloadUrlForLayer
               - ecr:BatchGetImage
               - ecr:BatchCheckLayerAvailability
+              - ecr:DescribeImages
               - ecr:PutImage
               - ecr:InitiateLayerUpload
               - ecr:UploadLayerPart
               - ecr:CompleteLayerUpload
 
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 'ecr:*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
       Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}'
         - Key: Project
           Value: !Ref ProjectName
         - Key: Environment
@@ -119,22 +231,26 @@ Resources:
 # Exportés pour être réutilisés par d'autres stacks (ex: la stack
 # CodeBuild aura besoin de RepositoryUri dans son buildspec, et la
 # stack IAM aura besoin de RepositoryArn pour restreindre les policies).
+#
+# Rappel : les noms d'export sont uniques par compte/région. Les préfixer
+# par ${AWS::StackName} garantit l'absence de collision si le template est
+# déployé plusieurs fois dans la même région.
 # ------------------------------------------------------------------
 Outputs:
   RepositoryUri:
     Description: URI complet du repository (à utiliser pour "docker push")
     Value: !GetAtt AppRepository.RepositoryUri
     Export:
-      Name: !Sub '${ProjectName}-${Environment}-ecr-uri'
+      Name: !Sub '${AWS::StackName}-ecr-uri'
 
   RepositoryArn:
     Description: ARN du repository (pour restreindre les IAM policies de CodeBuild/CodeDeploy)
     Value: !GetAtt AppRepository.Arn
     Export:
-      Name: !Sub '${ProjectName}-${Environment}-ecr-arn'
+      Name: !Sub '${AWS::StackName}-ecr-arn'
 
   RepositoryName:
     Description: Nom du repository ECR
     Value: !Ref AppRepository
     Export:
-      Name: !Sub '${ProjectName}-${Environment}-ecr-name'
+      Name: !Sub '${AWS::StackName}-ecr-name'
