@@ -227,9 +227,9 @@ jobs:
             -e "s|<AWS_ACCOUNT_ID>|123456789012|g" \
             -e "s|<PROJECT_NAME>|taskmanager|g" \
             -e "s|<ENVIRONMENT_NAME>|dev|g" \
-            -e "s|<AWS_REGION>|eu-west-1|g" \
-            -e "s|<DB_SECRET_ARN>|arn:aws:secretsmanager:eu-west-1:123456789012:secret:taskmanager/dev/db-AbC1dE|g" \
-            -e "s|<API_KEY_SECRET_ARN>|arn:aws:secretsmanager:eu-west-1:123456789012:secret:taskmanager/dev/api-key-Fg2HiJ|g" \
+            -e "s|<AWS_REGION>|eu-west-2|g" \
+            -e "s|<DB_SECRET_ARN>|arn:aws:secretsmanager:eu-west-2:123456789012:secret:taskmanager/dev/db-AbC1dE|g" \
+            -e "s|<API_KEY_SECRET_ARN>|arn:aws:secretsmanager:eu-west-2:123456789012:secret:taskmanager/dev/api-key-Fg2HiJ|g" \
             taskdef.template.json > taskdef.rendered.json
 
           python -c "import json; json.load(open('taskdef.rendered.json')); print('taskdef.json rendu : JSON valide')"

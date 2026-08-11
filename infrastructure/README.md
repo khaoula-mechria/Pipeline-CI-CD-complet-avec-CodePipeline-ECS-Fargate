@@ -288,13 +288,13 @@ flowchart TB
     subgraph VPC["VPC 10.0.0.0/16 (vpc.yml)"]
         direction LR
 
-        subgraph AZ1["AZ 1 (eu-west-1a)"]
+        subgraph AZ1["AZ 1 (eu-west-2a)"]
             direction TB
             Pub1["Subnet public 1<br/>10.0.0.0/24"]
             Priv1["Subnet privé 1<br/>10.0.10.0/24"]
         end
 
-        subgraph AZ2["AZ 2 (eu-west-1b)"]
+        subgraph AZ2["AZ 2 (eu-west-2b)"]
             direction TB
             Pub2["Subnet public 2<br/>10.0.1.0/24"]
             Priv2["Subnet privé 2<br/>10.0.11.0/24"]

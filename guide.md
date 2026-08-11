@@ -9,7 +9,7 @@ Jusqu'ici tout a été validé sans AWS (cfn-lint + LocalStack, voir
 [`infrastructure/scripts/README-tests-locaux.md`](infrastructure/scripts/README-tests-locaux.md)).
 Ce qui suit est la suite : le vrai compte.
 
-- Région utilisée dans tout le guide : **`eu-west-1`** (Irlande) — la même que les
+- Région utilisée dans tout le guide : **`eu-west-2`** (Irlande) — la même que les
   scripts de test locaux. **Ne change jamais de région en cours de route** : les
   `Fn::ImportValue` entre stacks ne franchissent pas les frontières de région.
 - `ProjectName=taskmanager`, `Environment=dev` (valeurs par défaut des templates).
@@ -38,16 +38,16 @@ un compte, trois rôles disponibles — `AdministratorAccess`, `Bedrock`,
 |---|---|
 | **Portail d'accès** (l'écran de ta capture) | `https://<ton-sous-domaine>.awsapps.com/start` — c'est l'URL que tu as déjà dans ton navigateur ; mets-la en favori. Si tu l'as perdue : `https://signin.aws.amazon.com/` puis « Se connecter avec IAM Identity Center ». |
 | **Console AWS** (une fois connectée) | Depuis le portail : clique sur le **nom du rôle `AdministratorAccess`** (le lien bleu de ta capture) → la console s'ouvre dans l'onglet. |
-| Console directe (si session déjà active) | https://eu-west-1.console.aws.amazon.com/console/home?region=eu-west-1 |
-| CloudFormation (l'écran que tu utiliseras le plus) | https://eu-west-1.console.aws.amazon.com/cloudformation/home?region=eu-west-1#/stacks |
-| CloudShell (terminal AWS **dans le navigateur**, déjà authentifié, gratuit) | https://eu-west-1.console.aws.amazon.com/cloudshell/home?region=eu-west-1 |
+| Console directe (si session déjà active) | https://eu-west-2.console.aws.amazon.com/console/home?region=eu-west-2 |
+| CloudFormation (l'écran que tu utiliseras le plus) | https://eu-west-2.console.aws.amazon.com/cloudformation/home?region=eu-west-2#/stacks |
+| CloudShell (terminal AWS **dans le navigateur**, déjà authentifié, gratuit) | https://eu-west-2.console.aws.amazon.com/cloudshell/home?region=eu-west-2 |
 
 > **Le rôle à utiliser : `AdministratorAccess`.** `Bedrock` et `DataScientist`
 > n'ont pas les droits de créer des rôles IAM, des VPC ou des pipelines : les
 > stacks échoueraient sur `AccessDenied`.
 
 > **Vérifie toujours la région** en haut à droite de la console : si elle
-> n'affiche pas « Irlande / eu-west-1 », tu regarderas des écrans vides en te
+> n'affiche pas « Irlande / eu-west-2 », tu regarderas des écrans vides en te
 > demandant pourquoi tes stacks ont disparu. C'est l'erreur n°1.
 
 ---
@@ -59,7 +59,7 @@ s'exécute dans un terminal. Trois options, de la plus simple à la plus pratiqu
 
 ### Option A — CloudShell (zéro installation, recommandé pour un premier essai)
 
-Ouvre https://eu-west-1.console.aws.amazon.com/cloudshell/home?region=eu-west-1 :
+Ouvre https://eu-west-2.console.aws.amazon.com/cloudshell/home?region=eu-west-2 :
 un terminal Linux s'ouvre dans le navigateur, **déjà connecté avec ton rôle**
 (aucune clé à configurer). Gratuit (1 Go de stockage persistant inclus).
 
@@ -115,9 +115,9 @@ Le assistant pose 5 questions. Réponds :
 |---|---|
 | `SSO session name` | `taskmanager` |
 | `SSO start URL` | l'URL de ton portail : `https://<ton-sous-domaine>.awsapps.com/start` |
-| `SSO region` | la région **du portail** (souvent `eu-west-1` ou `us-east-1` — elle est indiquée dans la fenêtre « Clés d'accès », onglet SSO) |
+| `SSO region` | la région **du portail** (souvent `eu-west-2` ou `us-east-1` — elle est indiquée dans la fenêtre « Clés d'accès », onglet SSO) |
 | `SSO registration scopes` | laisse la valeur par défaut (`sso:account:access`) → `Entrée` |
-| *(un navigateur s'ouvre → autorise)* puis rôle / région / format | rôle **`AdministratorAccess`**, région **`eu-west-1`**, format **`json`** |
+| *(un navigateur s'ouvre → autorise)* puis rôle / région / format | rôle **`AdministratorAccess`**, région **`eu-west-2`**, format **`json`** |
 
 Ensuite, à chaque nouvelle journée de travail (la session SSO expire au bout de
 quelques heures) :
@@ -130,7 +130,7 @@ Et pour ne pas répéter `--profile` sur chaque commande, dans le terminal coura
 
 ```powershell
 $env:AWS_PROFILE = "taskmanager"
-$env:AWS_DEFAULT_REGION = "eu-west-1"
+$env:AWS_DEFAULT_REGION = "eu-west-2"
 ```
 
 > Ces deux variables ne vivent que dans **le terminal ouvert**. Nouveau
@@ -147,7 +147,7 @@ colle-le dans ton terminal. Il ressemble à :
 $env:AWS_ACCESS_KEY_ID="ASIA..."
 $env:AWS_SECRET_ACCESS_KEY="..."
 $env:AWS_SESSION_TOKEN="..."
-$env:AWS_DEFAULT_REGION="eu-west-1"
+$env:AWS_DEFAULT_REGION="eu-west-2"
 ```
 
 ⚠️ Ces clés **expirent en 1 à 12 h** (ce sont des credentials temporaires, d'où
@@ -204,7 +204,7 @@ externe à AWS).
    `iam.yaml` crée la connexion, mais elle naît au statut **`PENDING`** : le
    *handshake* OAuth avec GitHub doit être fait par un humain dans la console.
    Tant qu'elle est `PENDING`, le stage *Source* de CodePipeline échoue.
-   → Console : https://eu-west-1.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-1
+   → Console : https://eu-west-2.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-2
    → sélectionne `taskmanager-dev-github` → **« Update pending connection »** →
    autorise l'app AWS Connector for GitHub → le statut passe à **`AVAILABLE`**.
    Vérification :
@@ -312,7 +312,7 @@ aws ec2 describe-nat-gateways --filter "Name=tag:Project,Values=taskmanager" `
   --query "NatGateways[].{Id:NatGatewayId,Etat:State}" --output table
 ```
 
-**Vérifier dans la console** : https://eu-west-1.console.aws.amazon.com/vpcconsole/home?region=eu-west-1#vpcs:
+**Vérifier dans la console** : https://eu-west-2.console.aws.amazon.com/vpcconsole/home?region=eu-west-2#vpcs:
 → le VPC `taskmanager-dev-vpc` doit apparaître ; onglet **Resource map** pour voir
 les 4 subnets et le routage d'un coup d'œil.
 
@@ -321,7 +321,7 @@ les 4 subnets et le routage d'un coup d'œil.
 ### Étape 2 — IAM + connexion GitHub 💰 gratuit
 
 ```powershell
-aws cloudformation deploy --template-file iam.yaml `
+aws cloudformation deploy --template-file infrastructure/cloudformation/iam.yaml `
   --stack-name taskmanager-dev-iam `
   --parameter-overrides ProjectName=taskmanager Environment=dev `
   --capabilities CAPABILITY_NAMED_IAM
@@ -344,7 +344,7 @@ aws codestar-connections list-connections --query "Connections[].{Nom:Connection
 n°1 de [§4](#4-les-4-seules-actions-manuelles-obligatoires) pour le passer à
 `AVAILABLE`.
 
-**Console** : https://eu-west-1.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-1
+**Console** : https://eu-west-2.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-2
 
 ---
 
@@ -378,7 +378,7 @@ aws secretsmanager list-secrets --query "SecretList[?starts_with(Name,'taskmanag
 aws secretsmanager get-secret-value --secret-id taskmanager/dev/db --query SecretString --output text
 ```
 
-**Console** : https://eu-west-1.console.aws.amazon.com/secretsmanager/listsecrets?region=eu-west-1
+**Console** : https://eu-west-2.console.aws.amazon.com/secretsmanager/listsecrets?region=eu-west-2
 
 ---
 
@@ -407,7 +407,7 @@ aws ecr describe-repositories --repository-names taskmanager-dev `
 aws ecr list-images --repository-name taskmanager-dev --output table
 ```
 
-**Console** : https://eu-west-1.console.aws.amazon.com/ecr/repositories?region=eu-west-1
+**Console** : https://eu-west-2.console.aws.amazon.com/ecr/repositories?region=eu-west-2
 
 > ⚠️ **Problème connu, à trancher AVANT l'étape 5** (déjà documenté dans
 > [`so-far.md`](so-far.md)) : `ecr.yaml` déclare `ImageTagMutability: IMMUTABLE`
@@ -460,7 +460,7 @@ aws logs tail /aws/codebuild/taskmanager-dev --follow
 Attendu : `buildStatus = SUCCEEDED`, puis une image visible dans
 `aws ecr list-images --repository-name taskmanager-dev`.
 
-**Console** : https://eu-west-1.console.aws.amazon.com/codesuite/codebuild/projects?region=eu-west-1
+**Console** : https://eu-west-2.console.aws.amazon.com/codesuite/codebuild/projects?region=eu-west-2
 → le projet → un build → onglets **Phase details** (quelle phase a échoué),
 **Build logs**, **Reports** (tests JUnit + couverture Cobertura affichée
 nativement).
@@ -499,7 +499,7 @@ aws ecs describe-clusters --clusters taskmanager-dev-cluster `
   --query "clusters[0].{Nom:clusterName,Statut:status,Taches:runningTasksCount}"
 ```
 
-**Console** : https://eu-west-1.console.aws.amazon.com/ecs/v2/clusters?region=eu-west-1
+**Console** : https://eu-west-2.console.aws.amazon.com/ecs/v2/clusters?region=eu-west-2
 
 ---
 
@@ -538,7 +538,7 @@ aws elbv2 describe-load-balancers --names taskmanager-dev-alb `
 À ce stade, `curl http://<DNS>/` répond **503** : c'est le comportement
 **attendu** — l'ALB existe mais aucune tâche n'est encore derrière.
 
-**Console** : https://eu-west-1.console.aws.amazon.com/ec2/home?region=eu-west-1#LoadBalancers:
+**Console** : https://eu-west-2.console.aws.amazon.com/ec2/home?region=eu-west-2#LoadBalancers:
 
 ---
 
@@ -593,7 +593,7 @@ Blue, et délègue les déploiements à CodeDeploy
 (`DeploymentController: CODE_DEPLOY`).
 
 **Coût** : Fargate est facturé **à la seconde** sur les ressources demandées, à
-eu-west-1 : 0,04048 $/vCPU-h + 0,004445 $/GB-h. Une tâche 0,25 vCPU / 0,5 Go =
+eu-west-2 : 0,04048 $/vCPU-h + 0,004445 $/GB-h. Une tâche 0,25 vCPU / 0,5 Go =
 **0,0123 $/h** → **2 tâches = 0,025 $/h = 0,59 $/jour**. Pendant un déploiement
 Blue/Green, les 2 versions coexistent → **le double**, temporairement.
 👉 `DesiredCount=1` divise ce poste par deux si tu veux juste voir l'app répondre.
@@ -626,15 +626,15 @@ aws logs tail /ecs/taskmanager-dev --follow                # les logs du contene
 
 **Vérifier dans la console**
 
-1. **ECS** → https://eu-west-1.console.aws.amazon.com/ecs/v2/clusters/taskmanager-dev-cluster/services?region=eu-west-1
+1. **ECS** → https://eu-west-2.console.aws.amazon.com/ecs/v2/clusters/taskmanager-dev-cluster/services?region=eu-west-2
    → le service doit afficher **2/2 tasks running** ; onglet **Health and
    metrics** pour l'état du target group, onglet **Logs** pour les logs
    applicatifs, onglet **Events** en cas de boucle de redémarrage.
-2. **Target group** → https://eu-west-1.console.aws.amazon.com/ec2/home?region=eu-west-1#TargetGroups:
+2. **Target group** → https://eu-west-2.console.aws.amazon.com/ec2/home?region=eu-west-2#TargetGroups:
    → `taskmanager-dev-tg-blue` → onglet **Targets** → les 2 cibles en
    **healthy** (vert).
 3. **L'app elle-même** : copie le **DNS name** de l'ALB
-   (https://eu-west-1.console.aws.amazon.com/ec2/home?region=eu-west-1#LoadBalancers:)
+   (https://eu-west-2.console.aws.amazon.com/ec2/home?region=eu-west-2#LoadBalancers:)
    et ouvre `http://<dns>` → l'interface HTML du task-manager s'affiche.
 
 ---
@@ -682,10 +682,10 @@ aws deploy get-deployment --deployment-id <id> --query "deploymentInfo.status"
 ```
 
 **Console** (c'est l'écran le plus parlant du projet) :
-https://eu-west-1.console.aws.amazon.com/codesuite/codepipeline/pipelines/taskmanager-dev-pipeline/view?region=eu-west-1
+https://eu-west-2.console.aws.amazon.com/codesuite/codepipeline/pipelines/taskmanager-dev-pipeline/view?region=eu-west-2
 → le diagramme vertical des 4 stages ; le bouton **Review** sur le stage
 Approval ; et pour la bascule de trafic :
-https://eu-west-1.console.aws.amazon.com/codesuite/codedeploy/deployments?region=eu-west-1
+https://eu-west-2.console.aws.amazon.com/codesuite/codedeploy/deployments?region=eu-west-2
 → un déploiement → **Traffic shifting progress** (10 % → 100 %).
 
 **Le test qui valide tout le projet** : fais un commit trivial sur `main` du
@@ -764,14 +764,14 @@ aws sns list-subscriptions --query "Subscriptions[?contains(TopicArn,'taskmanage
 # Statut "PendingConfirmation" = tu n'as pas encore cliqué le lien du mail
 ```
 
-**Console** : https://eu-west-1.console.aws.amazon.com/cloudwatch/home?region=eu-west-1#dashboards:
+**Console** : https://eu-west-2.console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:
 → `taskmanager-dev-dashboard`.
 
 ---
 
 ## 6. Récapitulatif des coûts
 
-Tarifs **eu-west-1**, ordre de grandeur (à confirmer avec
+Tarifs **eu-west-2**, ordre de grandeur (à confirmer avec
 [le calculateur AWS](https://calculator.aws/#/) — les prix évoluent).
 
 | # | Stack | Coût à l'heure | Coût au mois | Facturé même à l'arrêt ? |

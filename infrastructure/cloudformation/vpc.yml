@@ -46,7 +46,7 @@ Parameters:
   PrivateSubnet1Cidr:
     Type: String
     Default: 10.0.10.0/24
-    Description: Subnet privé — AZ 1 (tâches ECS Fargate).
+    Description: Subnet privE  AZ 1 (taches ECS Fargate).
 
   PrivateSubnet2Cidr:
     Type: String

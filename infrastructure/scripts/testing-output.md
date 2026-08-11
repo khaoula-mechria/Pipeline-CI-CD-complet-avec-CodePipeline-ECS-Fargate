@@ -92,7 +92,7 @@ LocalStack connue, pas un défaut de `vpc.yml`.**
 | `cfn-lint vpc.yml` | ✅ Valide syntaxiquement |
 | `cloudformation validate-template` | ✅ Template bien formé (tous les paramètres listés correctement) |
 | Déploiement (stratégie NAT `single`) | ❌ Échoue sur `NatGateway1` — voir limite ci-dessous |
-| VPC + 4 subnets (2 publics/2 privés) | ✅ Créés avec les bons CIDR/AZ (`10.0.0.0/24`@`eu-west-1a`, `10.0.10.0/24`@`eu-west-1a`, `10.0.1.0/24`@`eu-west-1b`, `10.0.11.0/24`@`eu-west-1b`) |
+| VPC + 4 subnets (2 publics/2 privés) | ✅ Créés avec les bons CIDR/AZ (`10.0.0.0/24`@`eu-west-2a`, `10.0.10.0/24`@`eu-west-2a`, `10.0.1.0/24`@`eu-west-2b`, `10.0.11.0/24`@`eu-west-2b`) |
 | Route tables (4 attendues : 1 implicite + 1 publique + 2 privées) | ✅ 4 confirmées |
 | Internet Gateway / VPC Endpoint S3 | ✅ Créés (vérifiés dans un run antérieur, structure inchangée) |
 | Outputs exportés | ❌ Absents — attendu, la stack n'atteint jamais `CREATE_COMPLETE` |

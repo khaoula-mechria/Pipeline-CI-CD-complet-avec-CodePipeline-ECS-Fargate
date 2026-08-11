@@ -67,7 +67,7 @@ Le script `test-local.sh` exécute, dans l'ordre :
    de la stack (`RepositoryUri`, `RepositoryArn`, `RepositoryName`).
 
 Les identifiants AWS factices (`AWS_ACCESS_KEY_ID=test`,
-`AWS_SECRET_ACCESS_KEY=test`, région `eu-west-1`) sont exportés
+`AWS_SECRET_ACCESS_KEY=test`, région `eu-west-2`) sont exportés
 directement par le script — LocalStack ne vérifie pas leur validité,
 mais l'AWS CLI exige qu'ils soient présents.
 
