@@ -82,15 +82,13 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-          Description: Trafic prod (listener principal)
+          Description: Main HTTP traffic
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
           CidrIp: 0.0.0.0/0
           Description: >
-            Listener de test CodeDeploy (validation de la version Green
-            avant le traffic shift) — a restreindre a un CIDR interne en
-            production si l'acces public n'est pas souhaite.
+            CodeDeploy test listener
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0

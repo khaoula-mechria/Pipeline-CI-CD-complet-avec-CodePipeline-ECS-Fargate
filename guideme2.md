@@ -312,7 +312,7 @@ aws cloudformation deploy `
   --parameter-overrides `
       ProjectName=taskmanager `
       Environment=dev `
-      GitHubRepoUrl=https://github.com/TON_USER/TON_REPO `
+      GitHubRepoUrl=https://github.com/khaoula-mechria/Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate `
   --capabilities CAPABILITY_NAMED_IAM `
   --region eu-west-2
 ```
