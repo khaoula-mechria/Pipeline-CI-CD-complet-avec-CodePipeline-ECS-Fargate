@@ -74,7 +74,7 @@ $files = @(
     "ecs-task-definition.yaml",
     "ecs-service.yaml",
     "pipeline.yml",
-    "ecs-autoscaling.yml",
+    "ecs-autoscaling.yaml",
     "observability.yml"
 )
 
