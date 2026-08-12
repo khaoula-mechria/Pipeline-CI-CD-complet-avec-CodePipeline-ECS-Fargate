@@ -3,54 +3,54 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   CodePipeline + CodeDeploy Blue/Green pour le projet (CI/CD AWS).
   Assemble UNIQUEMENT l'orchestration CI/CD : ALB, cluster/service/task
-  definition ECS ont été extraits dans des stacks dédiées (alb.yaml,
+  definition ECS ont ete extraits dans des stacks dediees (alb.yaml,
   ecs-cluster.yaml, ecs-service.yaml, ecs-task-definition.yaml) pour suivre
-  une structure modulaire — cette stack les référence par Fn::ImportValue,
-  elle ne recrée rien.
-  - Bucket S3 d'artefacts + topic SNS + règle EventBridge de notification.
+  une structure modulaire - cette stack les reference par Fn::ImportValue,
+  elle ne recree rien.
+  - Bucket S3 d'artefacts + topic SNS + regle EventBridge de notification.
   - CodeDeploy Application + DeploymentGroup (Blue/Green, traffic shift
-    progressif, rollback automatique sur échec) — voir "CHOIX Blue/Green"
+    progressif, rollback automatique sur echec) - voir "CHOIX Blue/Green"
     ci-dessous.
   - CodePipeline (Source GitHub -> Build CodeBuild -> Deploy CodeDeployToECS).
 
 # ------------------------------------------------------------------
 # CHOIX Blue/Green vs Rolling :
-# On utilise AWS CodeDeploy pour un déploiement Blue/Green ECS plutôt qu'un
-# déploiement rolling piloté directement par ECS (DeploymentController
+# On utilise AWS CodeDeploy pour un deploiement Blue/Green ECS plutôt qu'un
+# deploiement rolling pilote directement par ECS (DeploymentController
 # type ECS), parce que Blue/Green apporte deux garanties qu'un rolling
 # update ECS natif n'a pas :
-#   1. Bascule de trafic contrôlée et progressive (DeploymentConfigName
+#   1. Bascule de trafic contrôlee et progressive (DeploymentConfigName
 #      ECSLinear10PercentEvery1Minute) via un second listener/target group
-#      (Green), au lieu de remplacer les tâches une à une derrière le même
+#      (Green), au lieu de remplacer les taches une a une derriere le même
 #      target group.
-#   2. Rollback automatique quasi instantané (AutoRollbackConfiguration sur
-#      DEPLOYMENT_FAILURE) : si les nouvelles tâches échouent leurs health
-#      checks pendant le traffic shift, CodeDeploy réoriente 100% du trafic
-#      vers Blue (l'ancienne version) SANS jamais l'avoir coupée. Un rolling
-#      update ECS classique aurait déjà commencé à terminer les anciennes
-#      tâches à ce stade.
+#   2. Rollback automatique quasi instantane (AutoRollbackConfiguration sur
+#      DEPLOYMENT_FAILURE) : si les nouvelles taches echouent leurs health
+#      checks pendant le traffic shift, CodeDeploy reoriente 100% du trafic
+#      vers Blue (l'ancienne version) SANS jamais l'avoir coupee. Un rolling
+#      update ECS classique aurait deja commence a terminer les anciennes
+#      taches a ce stade.
 # Coût : une paire de target groups (alb.yaml) + un listener de test (8080)
-# supplémentaires — acceptable pour la fiabilité gagnée sur un projet de
-# portfolio DevOps qui veut démontrer ce pattern.
+# supplementaires — acceptable pour la fiabilite gagnee sur un projet de
+# portfolio DevOps qui veut demontrer ce pattern.
 # ------------------------------------------------------------------
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DÉPLOIEMENT (déjà documenté dans iam.yaml/ecs-cluster.yaml) :
+# NOTE SUR L'ORDRE DE DePLOIEMENT (deja documente dans iam.yaml/ecs-cluster.yaml) :
 #   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
 #   5. codebuild.yaml   6. ecs-cluster.yaml   7. alb.yaml
 #   8. ecs-task-definition.yaml   9. ecs-service.yaml
 #   10. pipeline.yml  <- cette stack (importe les exports des 9 stacks
-#      précédentes ; ne crée plus l'ECS Fargate Service ni l'ALB elle-même)
+#      precedentes ; ne cree plus l'ECS Fargate Service ni l'ALB elle-même)
 #   11. ecs-autoscaling.yaml   12. observability.yml
 #
-# Le topic SNS créé ici est consommé par les alarmes de ecs-autoscaling.yaml
-# et de observability.yml — d'où leur position après cette stack.
+# Le topic SNS cree ici est consomme par les alarmes de ecs-autoscaling.yaml
+# et de observability.yml — d'où leur position apres cette stack.
 #
-# PRÉREQUIS AVANT DÉPLOIEMENT RÉEL :
-#   - GitHubConnection (iam.yaml) doit être autorisée manuellement dans la
+# PReREQUIS AVANT DePLOIEMENT ReEL :
+#   - GitHubConnection (iam.yaml) doit être autorisee manuellement dans la
 #     console AWS (Developer Tools > Connections) — sinon le stage Source
-#     de ce pipeline reste bloqué en PENDING.
-#   - Le repo GitHub pointé par FullRepositoryId doit contenir, à sa racine :
+#     de ce pipeline reste bloque en PENDING.
+#   - Le repo GitHub pointe par FullRepositoryId doit contenir, a sa racine :
 #     buildspec.yml, appspec.yaml, taskdef.template.json (voir task-manager/).
 # ------------------------------------------------------------------
 
@@ -65,24 +65,24 @@ Parameters:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre à l'Environment des autres stacks.
+    Description: Doit correspondre a l'Environment des autres stacks.
 
   FullRepositoryId:
     Type: String
     Default: ton-user/taskmanager
     Description: >
-      Dépôt GitHub au format 'owner/repo', utilisé par le stage Source
-      (action CodeStarSourceConnection). Doit être le même dépôt que
+      Depôt GitHub au format 'owner/repo', utilise par le stage Source
+      (action CodeStarSourceConnection). Doit être le même depôt que
       GitHubRepoUrl dans codebuild.yaml.
 
   BranchName:
     Type: String
     Default: main
     Description: >
-      Branche surveillée par ce pipeline. Volontairement une seule branche
-      (main) : la validation build/test des branches feature/* est déjà
-      couverte indépendamment par le webhook CodeBuild (codebuild.yaml,
-      déclenché sur main OU develop) — pas besoin d'un second pipeline pour
+      Branche surveillee par ce pipeline. Volontairement une seule branche
+      (main) : la validation build/test des branches feature/* est deja
+      couverte independamment par le webhook CodeBuild (codebuild.yaml,
+      declenche sur main OU develop) — pas besoin d'un second pipeline pour
       ça.
 
   EnableManualApproval:
@@ -91,19 +91,19 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: >
       Active le stage d'approbation manuelle entre Build et Deploy.
-      À 'true' (défaut), le pipeline s'arrête après le Build et attend une
-      approbation humaine : c'est ce qui donne un état "approval pending" à
+      a 'true' (defaut), le pipeline s'arrête apres le Build et attend une
+      approbation humaine : c'est ce qui donne un etat "approval pending" a
       notifier (F4 du cahier des charges).
-      TENSION ASSUMÉE AVEC US-01 : cette user story (Must Have) demande que le
-      déploiement soit déclenché "sans intervention manuelle". Les deux
-      exigences du CDC sont donc contradictoires par construction. Ce paramètre
+      TENSION ASSUMeE AVEC US-01 : cette user story (Must Have) demande que le
+      deploiement soit declenche "sans intervention manuelle". Les deux
+      exigences du CDC sont donc contradictoires par construction. Ce parametre
       permet de trancher par environnement plutôt que globalement : garder
       'true' en prod (garde-fou avant mise en production) et passer 'false' en
-      dev/staging pour retrouver le déploiement 100 % automatique de US-01 et
+      dev/staging pour retrouver le deploiement 100 % automatique de US-01 et
       l'objectif de cycle < 10 min (§1.2).
 
 Conditions:
-  # Contrôle l'inclusion du stage Approval dans le pipeline (voir le paramètre
+  # Contrôle l'inclusion du stage Approval dans le pipeline (voir le parametre
   # EnableManualApproval ci-dessus).
   HasManualApproval: !Equals [!Ref EnableManualApproval, 'true']
 
@@ -113,9 +113,9 @@ Resources:
   # BUCKET S3 D'ARTEFACTS DU PIPELINE
   # Nom EXACT attendu par CodePipelineServiceRole (iam.yaml, statement
   # PipelineArtifactsBucketAccess) : ne pas changer la convention de nommage
-  # sans mettre à jour iam.yaml en conséquence. Versioning obligatoire : la
+  # sans mettre a jour iam.yaml en consequence. Versioning obligatoire : la
   # policy IAM autorise s3:GetBucketVersioning, et CodePipeline exige un
-  # bucket versionné pour son ArtifactStore.
+  # bucket versionne pour son ArtifactStore.
   # ==========================================================================
   PipelineArtifactsBucket:
     Type: AWS::S3::Bucket
@@ -146,13 +146,13 @@ Resources:
 
   # ==========================================================================
   # NOTIFICATIONS SNS (F4 du cahier des charges)
-  # Nom préfixé ${ProjectName}-${Environment}- : convention attendue par
+  # Nom prefixe ${ProjectName}-${Environment}- : convention attendue par
   # CodePipelineServiceRole (statement PublishPipelineNotifications) — cette
-  # permission est réservée à un futur stage ManualApproval (CodePipeline
+  # permission est reservee a un futur stage ManualApproval (CodePipeline
   # publie alors directement via son propre rôle). Les notifications de
-  # changement d'état (SUCCESS/FAILED/...) implémentées ici passent par
+  # changement d'etat (SUCCESS/FAILED/...) implementees ici passent par
   # EventBridge, qui a besoin de SA PROPRE permission de publication
-  # (TopicPolicy ci-dessous), indépendante du rôle CodePipeline.
+  # (TopicPolicy ci-dessous), independante du rôle CodePipeline.
   # ==========================================================================
   PipelineNotificationsTopic:
     Type: AWS::SNS::Topic
@@ -187,8 +187,8 @@ Resources:
     Properties:
       Name: !Sub '${ProjectName}-${Environment}-pipeline-state-change'
       Description: >
-        Notifie PipelineNotificationsTopic à chaque changement d'état du
-        pipeline (démarrage, succès, échec...) — F4 du cahier des charges.
+        Notifie PipelineNotificationsTopic a chaque changement d'etat du
+        pipeline (demarrage, succes, echec...) — F4 du cahier des charges.
       EventPattern:
         source:
           - aws.codepipeline
@@ -210,14 +210,14 @@ Resources:
 
   # ==========================================================================
   # CODEDEPLOY — APPLICATION + DEPLOYMENT GROUP (Blue/Green ECS)
-  # ServiceRoleArn importé de iam.yaml (policy managée AWSCodeDeployRoleForECS,
+  # ServiceRoleArn importe de iam.yaml (policy managee AWSCodeDeployRoleForECS,
   # cf. CodeDeployServiceRole). Cluster/service ECS et target groups/listeners
-  # ALB importés des stacks dédiées (ecs-cluster.yaml, ecs-service.yaml,
-  # alb.yaml) — plus aucune ressource réseau/compute recréée ici.
-  # DeploymentConfigName ECSLinear10PercentEvery1Minute est l'équivalent
-  # prédéfini AWS le plus proche du traffic shift F3 du cahier des charges
+  # ALB importes des stacks dediees (ecs-cluster.yaml, ecs-service.yaml,
+  # alb.yaml) — plus aucune ressource reseau/compute recreee ici.
+  # DeploymentConfigName ECSLinear10PercentEvery1Minute est l'equivalent
+  # predefini AWS le plus proche du traffic shift F3 du cahier des charges
   # (10 % -> 100 % en ~10 min, palier toutes les minutes) — AWS ne propose
-  # pas de config prédéfinie avec paliers 10/50/100 exacts.
+  # pas de config predefinie avec paliers 10/50/100 exacts.
   # ==========================================================================
   CodeDeployApplication:
     Type: AWS::CodeDeploy::Application
@@ -263,8 +263,8 @@ Resources:
             'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
           ServiceName: !ImportValue
             'Fn::Sub': '${ProjectName}-${Environment}-ecs-service-name'
-      # Rollback automatique sur échec de déploiement (health checks ECS/ALB
-      # qui échouent pendant le traffic shift) — critère US-03 / F3.
+      # Rollback automatique sur echec de deploiement (health checks ECS/ALB
+      # qui echouent pendant le traffic shift) — critere US-03 / F3.
       AutoRollbackConfiguration:
         Enabled: true
         Events:
@@ -272,10 +272,10 @@ Resources:
 
   # ==========================================================================
   # CODEPIPELINE — Source (GitHub) -> Build (CodeBuild) -> Deploy (CodeDeployToECS)
-  # ApplicationName/DeploymentGroupName référencés en dur via convention de
+  # ApplicationName/DeploymentGroupName references en dur via convention de
   # nommage (comme dans CodeDeployApplication/DeploymentGroup ci-dessus)
-  # plutôt que par Ref, pour rester cohérent avec le reste du fichier et
-  # éviter toute ambiguïté sur ce que Ref renvoie pour ces deux types de
+  # plutôt que par Ref, pour rester coherent avec le reste du fichier et
+  # eviter toute ambiguïte sur ce que Ref renvoie pour ces deux types de
   # ressources.
   # ==========================================================================
   CodePipeline:
@@ -328,26 +328,26 @@ Resources:
         # ====================================================================
         # STAGE APPROVAL (F4) — approbation humaine entre Build et Deploy.
         #
-        # C'est ce stage qui crée l'état "approval pending" que F4 demande de
-        # notifier. Le mécanisme est natif : renseigner NotificationArn fait
+        # C'est ce stage qui cree l'etat "approval pending" que F4 demande de
+        # notifier. Le mecanisme est natif : renseigner NotificationArn fait
         # publier par CodePipeline lui-même, sur le topic SNS, un message
-        # contenant le lien d'approbation dès que le pipeline se met en
-        # attente. Aucune règle EventBridge supplémentaire n'est nécessaire —
+        # contenant le lien d'approbation des que le pipeline se met en
+        # attente. Aucune regle EventBridge supplementaire n'est necessaire —
         # et il n'y en aurait pas de satisfaisante, car "en attente
-        # d'approbation" n'est pas un état d'exécution de pipeline : du point
-        # de vue de CodePipeline l'exécution reste simplement InProgress.
+        # d'approbation" n'est pas un etat d'execution de pipeline : du point
+        # de vue de CodePipeline l'execution reste simplement InProgress.
         #
         # Permissions : CodePipeline publie avec le rôle de service du
-        # pipeline, qui porte déjà sns:Publish (iam.yaml). Rien à ajouter dans
+        # pipeline, qui porte deja sns:Publish (iam.yaml). Rien a ajouter dans
         # la policy du topic : en intra-compte, l'autorisation identity-based
         # suffit pour SNS.
         #
-        # Le stage est CONDITIONNEL (paramètre EnableManualApproval) : voir la
-        # description de ce paramètre pour la contradiction assumée avec US-01,
-        # qui exige au contraire un déploiement "sans intervention manuelle".
+        # Le stage est CONDITIONNEL (parametre EnableManualApproval) : voir la
+        # description de ce parametre pour la contradiction assumee avec US-01,
+        # qui exige au contraire un deploiement "sans intervention manuelle".
         #
-        # À SAVOIR : une approbation non traitée expire au bout de 7 jours
-        # (limite AWS, non configurable) et l'exécution passe alors en échec.
+        # a SAVOIR : une approbation non traitee expire au bout de 7 jours
+        # (limite AWS, non configurable) et l'execution passe alors en echec.
         # ====================================================================
         - !If
           - HasManualApproval
@@ -361,8 +361,8 @@ Resources:
                   Version: '1'
                 Configuration:
                   NotificationArn: !Ref PipelineNotificationsTopic
-                  # Message affiché à l'approbateur dans la console et repris
-                  # dans l'email SNS (140 caractères maximum).
+                  # Message affiche a l'approbateur dans la console et repris
+                  # dans l'email SNS (140 caracteres maximum).
                   CustomData: !Sub >-
                     Deployer ${ProjectName} (${Environment}) en Blue/Green sur ECS Fargate ?
                     Build, tests, SAST et scan ECR sont deja passes.
@@ -380,17 +380,17 @@ Resources:
               Configuration:
                 ApplicationName: !Sub '${ProjectName}-${Environment}-app'
                 DeploymentGroupName: !Sub '${ProjectName}-${Environment}-dg'
-                # taskdef.json est GÉNÉRÉ par buildspec.yml (ARN de rôles
-                # injectés au build, cf. task-manager/taskdef.template.json)
+                # taskdef.json est GeNeRe par buildspec.yml (ARN de rôles
+                # injectes au build, cf. task-manager/taskdef.template.json)
                 # -> vient de l'artefact de BUILD, pas de Source.
                 TaskDefinitionTemplateArtifact: BuildArtifact
                 TaskDefinitionTemplatePath: taskdef.json
-                # appspec.yaml ne contient aucune valeur spécifique au compte
-                # -> peut rester versionné tel quel dans le repo (Source).
+                # appspec.yaml ne contient aucune valeur specifique au compte
+                # -> peut rester versionne tel quel dans le repo (Source).
                 AppSpecTemplateArtifact: SourceArtifact
                 AppSpecTemplatePath: appspec.yaml
                 Image1ArtifactName: BuildArtifact
-                # Doit correspondre au placeholder <IMAGE1_NAME> utilisé
+                # Doit correspondre au placeholder <IMAGE1_NAME> utilise
                 # dans taskdef.template.json (champ "image" du conteneur).
                 Image1ContainerName: IMAGE1_NAME
               InputArtifacts:
@@ -401,20 +401,20 @@ Resources:
 Outputs:
 
   # Les 5 outputs ci-dessous sont des valeurs INFORMATIVES qui pointent vers
-  # des exports désormais produits par alb.yaml/ecs-cluster.yaml/
-  # ecs-service.yaml — SANS Export ici (le nom est déjà exporté par ces
+  # des exports desormais produits par alb.yaml/ecs-cluster.yaml/
+  # ecs-service.yaml — SANS Export ici (le nom est deja exporte par ces
   # stacks ; CloudFormation refuse qu'un même nom d'export existe deux fois).
   # observability.yaml importe ces mêmes noms directement depuis les
-  # nouvelles stacks : aucune modification n'y est nécessaire.
+  # nouvelles stacks : aucune modification n'y est necessaire.
   LoadBalancerDnsName:
-    Description: DNS de l'ALB (point d'entrée public de l'application)
+    Description: DNS de l'ALB (point d'entree public de l'application)
     Value: !ImportValue
       'Fn::Sub': '${ProjectName}-${Environment}-alb-dns'
 
   AlbFullName:
     Description: >
       Nom "full name" de l'ALB — requis comme dimension CloudWatch par la
-      stack d'observabilité (export d'origine : alb.yaml).
+      stack d'observabilite (export d'origine : alb.yaml).
     Value: !ImportValue
       'Fn::Sub': '${ProjectName}-${Environment}-alb-full-name'
 

@@ -2,17 +2,17 @@ AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
   Projet AWS CodeBuild pour le projet PFE (CI/CD AWS).
-  - Lié au dépôt GitHub de l'application (source directe, avant mise en place
-    complète de CodePipeline).
-  - Exécute buildspec.yml : install -> SAST -> build Docker -> tests -> push ECR.
-  - Déclenché automatiquement par un webhook GitHub sur push vers main/develop.
+  - Lie au depôt GitHub de l'application (source directe, avant mise en place
+    complete de CodePipeline).
+  - Execute buildspec.yml : install -> SAST -> build Docker -> tests -> push ECR.
+  - Declenche automatiquement par un webhook GitHub sur push vers main/develop.
 
 # ------------------------------------------------------------------
-# PRÉREQUIS MANUELS (impossibles à faire en CloudFormation) :
+# PReREQUIS MANUELS (impossibles a faire en CloudFormation) :
 #
-# CodeBuild a besoin d'un token d'authentification GitHub stocké UNE FOIS
-# au niveau du compte AWS avant de pouvoir déployer cette stack. À lancer
-# dès que tu as l'accès AWS, avant "aws cloudformation deploy" :
+# CodeBuild a besoin d'un token d'authentification GitHub stocke UNE FOIS
+# au niveau du compte AWS avant de pouvoir deployer cette stack. a lancer
+# des que tu as l'acces AWS, avant "aws cloudformation deploy" :
 #
 #   aws codebuild import-source-credentials \
 #     --server-type GITHUB \
@@ -20,40 +20,40 @@ Description: >
 #     --token <TON_GITHUB_PERSONAL_ACCESS_TOKEN>
 #
 # (Le token GitHub doit avoir le scope "repo" + "admin:repo_hook" pour
-# permettre à CodeBuild de créer le webhook automatiquement.)
+# permettre a CodeBuild de creer le webhook automatiquement.)
 # ------------------------------------------------------------------
 
 Parameters:
   ProjectName:
     Type: String
     Default: taskmanager
-    Description: Doit correspondre au ProjectName utilisé dans ecr.yaml.
+    Description: Doit correspondre au ProjectName utilise dans ecr.yaml.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre à l'Environment utilisé dans ecr.yaml.
+    Description: Doit correspondre a l'Environment utilise dans ecr.yaml.
 
   GitHubRepoUrl:
     Type: String
     Description: >
-      URL HTTPS du dépôt GitHub de l'application, ex:
+      URL HTTPS du depôt GitHub de l'application, ex:
       https://github.com/ton-user/taskmanager-app.git
 
   BuildImage:
     Type: String
     Default: aws/codebuild/standard:7.0
     Description: >
-      Image managée AWS incluant Docker + Node.js + Python.
+      Image managee AWS incluant Docker + Node.js + Python.
       standard:7.0 fournit Node 18/20 nativement.
 
 Resources:
 
   # ------------------------------------------------------------------
-  # RÔLE IAM utilisé PAR CodeBuild pour exécuter le build.
-  # Principe du moindre privilège : uniquement ce qui est nécessaire
-  # pour push l'image vers CE repository ECR précis + écrire ses logs.
+  # RÔLE IAM utilise PAR CodeBuild pour executer le build.
+  # Principe du moindre privilege : uniquement ce qui est necessaire
+  # pour push l'image vers CE repository ECR precis + ecrire ses logs.
   # ------------------------------------------------------------------
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
@@ -72,7 +72,7 @@ Resources:
             Version: '2012-10-17'
             Statement:
 
-              # Écriture des logs de build dans CloudWatch Logs
+              # ecriture des logs de build dans CloudWatch Logs
               - Sid: CloudWatchLogsAccess
                 Effect: Allow
                 Action:
@@ -90,9 +90,9 @@ Resources:
                   - ecr:GetAuthorizationToken
                 Resource: '*'
 
-              # Push/pull restreint UNIQUEMENT au repository créé dans ecr.yaml
-              # (import de l'ARN exporté par l'autre stack -> pas de duplication,
-              # pas de valeur en dur, cohérence garantie entre les deux stacks)
+              # Push/pull restreint UNIQUEMENT au repository cree dans ecr.yaml
+              # (import de l'ARN exporte par l'autre stack -> pas de duplication,
+              # pas de valeur en dur, coherence garantie entre les deux stacks)
               - Sid: EcrPushPull
                 Effect: Allow
                 Action:
@@ -107,10 +107,10 @@ Resources:
                   - !ImportValue
                     'Fn::Sub': '${ProjectName}-${Environment}-ecr-arn'
 
-              # US-05 : buildspec.yml lit le résultat du scan ECR après le push
-              # (déclenché par ScanOnPush, cf. ecr.yaml) pour bloquer sur
+              # US-05 : buildspec.yml lit le resultat du scan ECR apres le push
+              # (declenche par ScanOnPush, cf. ecr.yaml) pour bloquer sur
               # CRITICAL et notifier sur HIGH. Sans cette permission, l'appel
-              # describe-image-scan-findings échoue et le build s'arrête en
+              # describe-image-scan-findings echoue et le build s'arrête en
               # fail-safe.
               - Sid: EcrReadScanFindings
                 Effect: Allow
@@ -120,15 +120,15 @@ Resources:
                   - !ImportValue
                     'Fn::Sub': '${ProjectName}-${Environment}-ecr-arn'
 
-              # US-05 : notification SNS du résultat du scan (bloquant sur
+              # US-05 : notification SNS du resultat du scan (bloquant sur
               # CRITICAL, informatif sur HIGH).
               #
-              # ARN construit par convention de nommage plutôt qu'importé de
-              # pipeline.yml : cette stack se déploie en 5e position, bien AVANT
-              # pipeline.yml (10e) qui crée le topic. Un Fn::ImportValue créerait
-              # une dépendance circulaire dans l'ordre de déploiement. Le nom du
-              # topic est déterministe (TopicName dans pipeline.yml) et un ARN
-              # SNS n'a pas de suffixe aléatoire, contrairement à Secrets
+              # ARN construit par convention de nommage plutôt qu'importe de
+              # pipeline.yml : cette stack se deploie en 5e position, bien AVANT
+              # pipeline.yml (10e) qui cree le topic. Un Fn::ImportValue creerait
+              # une dependance circulaire dans l'ordre de deploiement. Le nom du
+              # topic est deterministe (TopicName dans pipeline.yml) et un ARN
+              # SNS n'a pas de suffixe aleatoire, contrairement a Secrets
               # Manager : la convention est donc fiable ici.
               - Sid: PublishScanNotifications
                 Effect: Allow
@@ -141,25 +141,25 @@ Resources:
   # LOG GROUP CLOUDWATCH DES BUILDS
   #
   # F4 du cahier des charges : "les logs de build et d'application sont
-  # centralisés dans CloudWatch Logs avec une rétention de 30 jours".
+  # centralises dans CloudWatch Logs avec une retention de 30 jours".
   #
-  # Déclaré explicitement ici, et PAS laissé à la création automatique par
-  # CodeBuild : un log group créé implicitement au premier build a une
-  # rétention "Never expire" (les logs s'accumulent indéfiniment, et la
-  # facture avec). C'était le cas avant le 2026-07-28 — LogsConfig ne faisait
-  # que désigner un nom de groupe, sans jamais créer la ressource.
+  # Declare explicitement ici, et PAS laisse a la creation automatique par
+  # CodeBuild : un log group cree implicitement au premier build a une
+  # retention "Never expire" (les logs s'accumulent indefiniment, et la
+  # facture avec). C'etait le cas avant le 2026-07-28 — LogsConfig ne faisait
+  # que designer un nom de groupe, sans jamais creer la ressource.
   #
-  # NOTE POUR UN DÉPLOIEMENT SUR UNE STACK DÉJÀ EXISTANTE : si des builds ont
-  # déjà tourné, CodeBuild a créé ce log group tout seul et CloudFormation
-  # échouera avec "already exists". Il faut alors soit le supprimer avant
+  # NOTE POUR UN DePLOIEMENT SUR UNE STACK DeJa EXISTANTE : si des builds ont
+  # deja tourne, CodeBuild a cree ce log group tout seul et CloudFormation
+  # echouera avec "already exists". Il faut alors soit le supprimer avant
   # (`aws logs delete-log-group`), soit l'importer dans la stack. Sur un
-  # premier déploiement, rien à faire.
+  # premier deploiement, rien a faire.
   # ------------------------------------------------------------------
   BuildLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/codebuild/${ProjectName}-${Environment}'
-      # Rétention 30 jours : F4 du cahier des charges (même valeur que le log
+      # Retention 30 jours : F4 du cahier des charges (même valeur que le log
       # group applicatif ECS dans ecs-task-definition.yaml).
       RetentionInDays: 30
 
@@ -173,20 +173,20 @@ Resources:
       Description: !Sub 'Build, tests et image Docker pour ${ProjectName} (${Environment})'
       ServiceRole: !GetAtt CodeBuildServiceRole.Arn
 
-      # Source directement liée au dépôt GitHub (critère d'acceptation).
+      # Source directement liee au depôt GitHub (critere d'acceptation).
       Source:
         Type: GITHUB
         Location: !Ref GitHubRepoUrl
-        # Chemin résolu depuis la RACINE du dépôt cloné, pas depuis un
-        # sous-répertoire : l'application vit dans task-manager/, donc le
-        # buildspec doit être désigné avec son préfixe. Avec la valeur
-        # précédente ("buildspec.yml"), CodeBuild cherchait le fichier à la
-        # racine et le build échouait avant même la phase install.
+        # Chemin resolu depuis la RACINE du depôt clone, pas depuis un
+        # sous-repertoire : l'application vit dans task-manager/, donc le
+        # buildspec doit être designe avec son prefixe. Avec la valeur
+        # precedente ("buildspec.yml"), CodeBuild cherchait le fichier a la
+        # racine et le build echouait avant même la phase install.
         BuildSpec: task-manager/buildspec.yml
         GitCloneDepth: 1
         ReportBuildStatus: true
 
-      # Déclenchement automatique par webhook : push sur main OU develop.
+      # Declenchement automatique par webhook : push sur main OU develop.
       Triggers:
         Webhook: true
         FilterGroups:
@@ -199,8 +199,8 @@ Resources:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
         Image: !Ref BuildImage
-        # PrivilegedMode est OBLIGATOIRE : sans lui, "docker build" à
-        # l'intérieur de CodeBuild échoue (pas d'accès au démon Docker).
+        # PrivilegedMode est OBLIGATOIRE : sans lui, "docker build" a
+        # l'interieur de CodeBuild echoue (pas d'acces au demon Docker).
         PrivilegedMode: true
         EnvironmentVariables:
           - Name: ECR_REPOSITORY_URI
@@ -210,24 +210,24 @@ Resources:
             Value: !Ref AWS::Region
           - Name: AWS_ACCOUNT_ID
             Value: !Ref AWS::AccountId
-          # Utilisées par buildspec.yml pour générer dynamiquement taskdef.json
+          # Utilisees par buildspec.yml pour generer dynamiquement taskdef.json
           # (ARN des rôles ECS = ${ProjectName}-${Environment}-ecs-*-role, par
           # convention de nommage — voir iam.yaml) sans les coder en dur.
           - Name: PROJECT_NAME
             Value: !Ref ProjectName
           - Name: ENVIRONMENT_NAME
             Value: !Ref Environment
-          # ARN des secrets applicatifs, injectés dans taskdef.json par
+          # ARN des secrets applicatifs, injectes dans taskdef.json par
           # buildspec.yml (bloc "secrets" de la task definition).
           #
-          # Un ARN de secret n'est PAS une donnée sensible : c'est un
+          # Un ARN de secret n'est PAS une donnee sensible : c'est un
           # identifiant. F3 interdit les VALEURS de secrets en clair dans les
           # variables d'environnement CodeBuild — c'est justement ce que ce
-          # mécanisme évite : seul l'ARN transite ici, la valeur est lue par
-          # l'agent ECS au démarrage de la tâche.
+          # mecanisme evite : seul l'ARN transite ici, la valeur est lue par
+          # l'agent ECS au demarrage de la tache.
           #
-          # Importés depuis secrets-manager.yaml car l'ARN se termine par un
-          # suffixe aléatoire de 6 caractères ajouté par AWS : impossible de
+          # Importes depuis secrets-manager.yaml car l'ARN se termine par un
+          # suffixe aleatoire de 6 caracteres ajoute par AWS : impossible de
           # le reconstruire par convention de nommage.
           - Name: DB_SECRET_ARN
             Value: !ImportValue
@@ -235,20 +235,20 @@ Resources:
           - Name: API_KEY_SECRET_ARN
             Value: !ImportValue
               'Fn::Sub': '${ProjectName}-${Environment}-api-key-secret-arn'
-          # Topic de notification du pipeline, utilisé par buildspec.yml pour
-          # publier le résultat du scan ECR (US-05). Construit par convention
-          # de nommage et NON importé de pipeline.yml : voir la justification
+          # Topic de notification du pipeline, utilise par buildspec.yml pour
+          # publier le resultat du scan ECR (US-05). Construit par convention
+          # de nommage et NON importe de pipeline.yml : voir la justification
           # sur le statement IAM PublishScanNotifications ci-dessus (cette
-          # stack se déploie avant celle qui crée le topic).
+          # stack se deploie avant celle qui cree le topic).
           - Name: PIPELINE_NOTIFICATIONS_TOPIC_ARN
             Value: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-pipeline-notifications'
 
-      # Pas d'artefact S3 : le "livrable" du build est l'image poussée
+      # Pas d'artefact S3 : le "livrable" du build est l'image poussee
       # vers ECR directement dans buildspec.yml (post_build).
       Artifacts:
         Type: NO_ARTIFACTS
 
-      # Cache des dépendances npm entre builds -> builds plus rapides.
+      # Cache des dependances npm entre builds -> builds plus rapides.
       Cache:
         Type: LOCAL
         Modes:
@@ -259,9 +259,9 @@ Resources:
         CloudWatchLogs:
           Status: ENABLED
           # !Ref sur un AWS::Logs::LogGroup renvoie son NOM — exactement ce
-          # qu'attend GroupName. Passer par la référence plutôt que par un
-          # !Sub dupliqué crée en plus la dépendance CloudFormation : le log
-          # group (avec sa rétention) est garanti créé avant le projet.
+          # qu'attend GroupName. Passer par la reference plutôt que par un
+          # !Sub duplique cree en plus la dependance CloudFormation : le log
+          # group (avec sa retention) est garanti cree avant le projet.
           GroupName: !Ref BuildLogGroup
 
       TimeoutInMinutes: 15
@@ -274,7 +274,7 @@ Resources:
 
 Outputs:
   ProjectName:
-    Description: Nom du projet CodeBuild (utile pour le déclencher manuellement en attendant CodePipeline)
+    Description: Nom du projet CodeBuild (utile pour le declencher manuellement en attendant CodePipeline)
     Value: !Ref BuildProject
 
   ProjectArn:
@@ -284,11 +284,11 @@ Outputs:
       Name: !Sub '${ProjectName}-${Environment}-codebuild-arn'
 
   ServiceRoleArn:
-    Description: ARN du rôle IAM utilisé par CodeBuild
+    Description: ARN du rôle IAM utilise par CodeBuild
     Value: !GetAtt CodeBuildServiceRole.Arn
 
   BuildLogGroupName:
-    Description: Nom du Log Group CloudWatch des builds (rétention 30 jours)
+    Description: Nom du Log Group CloudWatch des builds (retention 30 jours)
     Value: !Ref BuildLogGroup
     Export:
       Name: !Sub '${ProjectName}-${Environment}-codebuild-loggroup-name'

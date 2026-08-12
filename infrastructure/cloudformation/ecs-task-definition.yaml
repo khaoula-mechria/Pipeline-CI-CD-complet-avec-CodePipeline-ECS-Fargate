@@ -4,19 +4,19 @@ Description: >
   Task Definition ECS Fargate (bootstrap) + Log Group applicatif pour le
   projet (CI/CD AWS). Extrait de pipeline.yml pour suivre la structure
   modulaire.
-  Cette Task Definition sert UNIQUEMENT au premier déploiement (image
-  ContainerImage, "latest" par défaut). À partir du premier passage du
+  Cette Task Definition sert UNIQUEMENT au premier deploiement (image
+  ContainerImage, "latest" par defaut). a partir du premier passage du
   pipeline, c'est l'action CodePipeline "CodeDeployToECS" qui enregistre les
-  nouvelles révisions (à partir de taskdef.json + imageDetail.json produits
-  par CodeBuild) — cette dérive est un comportement ATTENDU et documenté du
+  nouvelles revisions (a partir de taskdef.json + imageDetail.json produits
+  par CodeBuild) - cette derive est un comportement ATTENDU et documente du
   pattern ECS Blue/Green, pas un bug (voir AWS: action-reference-ECSbluegreen).
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DÉPLOIEMENT (voir ecs-cluster.yaml) :
+# NOTE SUR L'ORDRE DE DePLOIEMENT (voir ecs-cluster.yaml) :
 #   ... 7. alb.yaml   8. ecs-task-definition.yaml   <- cette stack   ...
 #
-# Dépend aussi de 3. secrets-manager.yaml : le bloc Secrets ci-dessous importe
-# les ARN des secrets. Sans cette stack, le déploiement échoue à l'import.
+# Depend aussi de 3. secrets-manager.yaml : le bloc Secrets ci-dessous importe
+# les ARN des secrets. Sans cette stack, le deploiement echoue a l'import.
 # ------------------------------------------------------------------
 
 Parameters:
@@ -30,37 +30,37 @@ Parameters:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre à l'Environment des autres stacks.
+    Description: Doit correspondre a l'Environment des autres stacks.
 
   ContainerImage:
     Type: String
     Default: ''
     Description: >
-      URI complète de l'image Docker (ex: <account>.dkr.ecr.<region>.amazonaws.com/<repo>:latest).
-      Laisser vide pour utiliser par défaut '<RepositoryUri importé de ecr.yaml>:latest'
-      (bootstrap). Le pipeline (pipeline.yaml) écrase cette valeur à chaque
-      déploiement via taskdef.json généré par CodeBuild — ce paramètre ne
-      compte donc que pour le déploiement initial manuel de cette stack.
+      URI complete de l'image Docker (ex: <account>.dkr.ecr.<region>.amazonaws.com/<repo>:latest).
+      Laisser vide pour utiliser par defaut '<RepositoryUri importe de ecr.yaml>:latest'
+      (bootstrap). Le pipeline (pipeline.yaml) ecrase cette valeur a chaque
+      deploiement via taskdef.json genere par CodeBuild — ce parametre ne
+      compte donc que pour le deploiement initial manuel de cette stack.
 
   ContainerPort:
     Type: Number
     Default: 3000
-    Description: Port exposé par le conteneur (voir Dockerfile EXPOSE). Doit correspondre à alb.yaml.
+    Description: Port expose par le conteneur (voir Dockerfile EXPOSE). Doit correspondre a alb.yaml.
 
   ContainerCpu:
     Type: String
     Default: '256'
-    Description: CPU Fargate (unités). Doit correspondre à la valeur "cpu" de taskdef.template.json.
+    Description: CPU Fargate (unites). Doit correspondre a la valeur "cpu" de taskdef.template.json.
 
   ContainerMemory:
     Type: String
     Default: '512'
-    Description: Mémoire Fargate (Mo). Doit correspondre à la valeur "memory" de taskdef.template.json.
+    Description: Memoire Fargate (Mo). Doit correspondre a la valeur "memory" de taskdef.template.json.
 
   HealthCheckPath:
     Type: String
     Default: /health
-    Description: Chemin utilisé par le health check du conteneur (doit correspondre à alb.yaml).
+    Description: Chemin utilise par le health check du conteneur (doit correspondre a alb.yaml).
 
 Conditions:
   UseDefaultImage: !Equals [!Ref ContainerImage, '']
@@ -74,13 +74,13 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/ecs/${ProjectName}-${Environment}'
-      # Rétention 30 jours : F4 du cahier des charges.
+      # Retention 30 jours : F4 du cahier des charges.
       RetentionInDays: 30
 
   # ==========================================================================
   # TASK DEFINITION
-  # ExecutionRoleArn / TaskRoleArn importés de iam.yaml : jamais de rôle
-  # dupliqué ici (principe DRY déjà appliqué dans le reste du projet).
+  # ExecutionRoleArn / TaskRoleArn importes de iam.yaml : jamais de rôle
+  # duplique ici (principe DRY deja applique dans le reste du projet).
   # Environment : variables applicatives non sensibles uniquement — tout
   # secret doit passer par Secrets/ARN dans ce même bloc (voir Secrets
   # ci-dessous), jamais en clair.
@@ -112,12 +112,12 @@ Resources:
             - ContainerPort: !Ref ContainerPort
               Protocol: tcp
           # Variables d'environnement non sensibles de l'application.
-          # -> Pour ajouter une variable applicative : ajoute une entrée
+          # -> Pour ajouter une variable applicative : ajoute une entree
           #    Name/Value ici (ex: LOG_LEVEL, API_BASE_URL...).
-          # -> Pour une valeur SENSIBLE (mot de passe, clé API...), ne JAMAIS
+          # -> Pour une valeur SENSIBLE (mot de passe, cle API...), ne JAMAIS
           #    l'ajouter ici en clair : utilise plutôt "Secrets:" avec un ARN
           #    Secrets Manager sous ${ProjectName}/${Environment}/* (voir
-          #    la policy ReadAppSecrets déjà prévue dans iam.yaml,
+          #    la policy ReadAppSecrets deja prevue dans iam.yaml,
           #    EcsTaskExecutionRole).
           Environment:
             - Name: PROJECT_NAME
@@ -125,27 +125,27 @@ Resources:
             # NODE_ENV est une valeur technique attendue par Node/Express
             # ("production" active la mise en cache des vues et masque les
             # stacktraces) : elle ne doit PAS recevoir dev/staging/prod, sinon
-            # elle écrase le `ENV NODE_ENV=production` du Dockerfile et
-            # l'application tourne en mode dégradé jusqu'en production.
+            # elle ecrase le `ENV NODE_ENV=production` du Dockerfile et
+            # l'application tourne en mode degrade jusqu'en production.
             - Name: NODE_ENV
               Value: production
-            # Le nom de l'environnement du projet est exposé séparément.
+            # Le nom de l'environnement du projet est expose separement.
             - Name: APP_ENV
               Value: !Ref Environment
           # ====================================================================
-          # SECRETS (F3) — injectés au démarrage du conteneur par l'agent ECS,
+          # SECRETS (F3) — injectes au demarrage du conteneur par l'agent ECS,
           # qui les lit dans Secrets Manager avec EcsTaskExecutionRole.
           #
           # Ils arrivent dans le conteneur comme des variables d'environnement
-          # classiques, MAIS leur valeur n'est stockée nulle part en clair :
+          # classiques, MAIS leur valeur n'est stockee nulle part en clair :
           # ni dans ce template, ni dans taskdef.json, ni dans les variables
           # d'environnement du projet CodeBuild — seuls des ARN circulent.
           # `aws ecs describe-task-definition` ne renvoie que l'ARN, jamais la
           # valeur, contrairement au bloc Environment ci-dessus.
           #
-          # Syntaxe "<arn>:<cléJson>::" : extrait UNE clé d'un secret JSON.
+          # Syntaxe "<arn>:<cleJson>::" : extrait UNE cle d'un secret JSON.
           # Les 2 champs vides finaux sont version-stage et version-id (non
-          # précisés = version courante, AWSCURRENT).
+          # precises = version courante, AWSCURRENT).
           # ====================================================================
           Secrets:
             - Name: DB_USERNAME
@@ -158,8 +158,8 @@ Resources:
                 - '${SecretArn}:password::'
                 - SecretArn: !ImportValue
                     'Fn::Sub': '${ProjectName}-${Environment}-db-secret-arn'
-            # Secret à valeur simple (pas de JSON) : l'ARN nu suffit, sans
-            # suffixe de clé.
+            # Secret a valeur simple (pas de JSON) : l'ARN nu suffit, sans
+            # suffixe de cle.
             - Name: API_KEY
               ValueFrom: !ImportValue
                 'Fn::Sub': '${ProjectName}-${Environment}-api-key-secret-arn'
@@ -186,13 +186,13 @@ Resources:
 Outputs:
 
   TaskDefinitionArn:
-    Description: ARN (avec révision) de la Task Definition bootstrap
+    Description: ARN (avec revision) de la Task Definition bootstrap
     Value: !Ref EcsTaskDefinition
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-taskdef-arn'
 
   TaskDefinitionFamily:
-    Description: Famille de la Task Definition (nom stable across révisions)
+    Description: Famille de la Task Definition (nom stable across revisions)
     Value: !Sub '${ProjectName}-${Environment}-task'
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-taskdef-family'

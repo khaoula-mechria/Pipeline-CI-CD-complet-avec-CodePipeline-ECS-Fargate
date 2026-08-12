@@ -1,17 +1,17 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Infrastructure réseau (VPC) pour le projet PFE CI/CD AWS.
+  Infrastructure reseau (VPC) pour le projet PFE CI/CD AWS.
   Fournit la fondation sur laquelle s'appuieront les futures stacks :
-  ECS Fargate (dans les subnets privés), ALB (dans les subnets publics),
+  ECS Fargate (dans les subnets prives), ALB (dans les subnets publics),
   et CodeBuild/CodePipeline (VPC endpoints pour rester hors internet public).
 
-  Architecture : 1 VPC / 2 AZ / 2 subnets publics / 2 subnets privés /
+  Architecture : 1 VPC / 2 AZ / 2 subnets publics / 2 subnets prives /
   1 Internet Gateway / NAT Gateway(s) configurables (single ou HA) /
-  1 VPC Endpoint Gateway S3 (gratuit, réduit le trafic sortant via NAT).
+  1 VPC Endpoint Gateway S3 (gratuit, reduit le trafic sortant via NAT).
 
 # ==============================================================================
-# PARAMÈTRES
+# PARAMeTRES
 # ==============================================================================
 Parameters:
 
@@ -19,13 +19,13 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName utilisé dans ecr.yaml / codebuild.yaml.
+    Description: Doit correspondre au ProjectName utilise dans ecr.yaml / codebuild.yaml.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre à l'Environment utilisé dans les autres stacks.
+    Description: Doit correspondre a l'Environment utilise dans les autres stacks.
 
   VpcCidr:
     Type: String
@@ -41,7 +41,7 @@ Parameters:
   PublicSubnet2Cidr:
     Type: String
     Default: 10.0.1.0/24
-    Description: Subnet public — AZ 2 (ALB, NAT Gateway si stratégie HA).
+    Description: Subnet public — AZ 2 (ALB, NAT Gateway si strategie HA).
 
   PrivateSubnet1Cidr:
     Type: String
@@ -51,19 +51,19 @@ Parameters:
   PrivateSubnet2Cidr:
     Type: String
     Default: 10.0.11.0/24
-    Description: Subnet privé — AZ 2 (tâches ECS Fargate).
+    Description: Subnet prive — AZ 2 (taches ECS Fargate).
 
   NatGatewayStrategy:
     Type: String
     Default: single
     AllowedValues: [single, ha]
     Description: >
-      "single"  = 1 seul NAT Gateway partagé par les 2 AZ (coût réduit,
-                  adapté à dev/staging — ~32 USD/mois au lieu de ~64).
-      "ha"      = 1 NAT Gateway PAR AZ (haute disponibilité recommandée
+      "single"  = 1 seul NAT Gateway partage par les 2 AZ (coût reduit,
+                  adapte a dev/staging — ~32 USD/mois au lieu de ~64).
+      "ha"      = 1 NAT Gateway PAR AZ (haute disponibilite recommandee
                   en production : une panne d'AZ n'affecte pas la sortie
                   internet de l'autre AZ).
-      Basculer de "single" à "ha" ne casse rien : seule la route de
+      Basculer de "single" a "ha" ne casse rien : seule la route de
       PrivateRouteTable2 change de cible (voir PrivateRoute2 plus bas).
 
   EnableFlowLogs:
@@ -71,14 +71,14 @@ Parameters:
     Default: 'false'
     AllowedValues: ['true', 'false']
     Description: >
-      Active les VPC Flow Logs vers CloudWatch Logs (traçabilité du trafic
-      réseau, utile en prod / audit sécurité). Laissé à "false" par défaut
-      pour ne pas générer de coût CloudWatch inutile en dev.
+      Active les VPC Flow Logs vers CloudWatch Logs (traçabilite du trafic
+      reseau, utile en prod / audit securite). Laisse a "false" par defaut
+      pour ne pas generer de coût CloudWatch inutile en dev.
 
   FlowLogsRetentionDays:
     Type: Number
     Default: 30
-    Description: Durée de rétention des Flow Logs si EnableFlowLogs=true.
+    Description: Duree de retention des Flow Logs si EnableFlowLogs=true.
 
 # ==============================================================================
 # CONDITIONS
@@ -99,7 +99,7 @@ Resources:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: !Ref VpcCidr
-      # Requis pour : résolution DNS privée des futurs VPC Interface Endpoints
+      # Requis pour : resolution DNS privee des futurs VPC Interface Endpoints
       # (ECR, Secrets Manager, CloudWatch Logs) et pour ECS Service Discovery.
       EnableDnsSupport: true
       EnableDnsHostnames: true
@@ -114,7 +114,7 @@ Resources:
           Value: CloudFormation
 
   # ------------------------------------------------------------------------
-  # INTERNET GATEWAY (sortie/entrée internet pour les subnets publics)
+  # INTERNET GATEWAY (sortie/entree internet pour les subnets publics)
   # ------------------------------------------------------------------------
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -134,7 +134,7 @@ Resources:
       InternetGatewayId: !Ref InternetGateway
 
   # ------------------------------------------------------------------------
-  # SUBNETS PUBLICS (ALB, NAT Gateway) — 2 AZ pour la haute disponibilité
+  # SUBNETS PUBLICS (ALB, NAT Gateway) — 2 AZ pour la haute disponibilite
   # ------------------------------------------------------------------------
   PublicSubnet1:
     Type: AWS::EC2::Subnet
@@ -171,7 +171,7 @@ Resources:
           Value: public
 
   # ------------------------------------------------------------------------
-  # SUBNETS PRIVÉS (tâches ECS Fargate) — pas d'IP publique, sortie via NAT
+  # SUBNETS PRIVeS (taches ECS Fargate) — pas d'IP publique, sortie via NAT
   # ------------------------------------------------------------------------
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -208,8 +208,8 @@ Resources:
           Value: private
 
   # ------------------------------------------------------------------------
-  # ROUTAGE PUBLIC — une seule table, partagée par les 2 subnets publics
-  # (les subnets publics ont tous la même règle : 0.0.0.0/0 -> IGW)
+  # ROUTAGE PUBLIC — une seule table, partagee par les 2 subnets publics
+  # (les subnets publics ont tous la même regle : 0.0.0.0/0 -> IGW)
   # ------------------------------------------------------------------------
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -245,8 +245,8 @@ Resources:
 
   # ------------------------------------------------------------------------
   # NAT GATEWAY(S)
-  # NatGateway1 est TOUJOURS créé (dans PublicSubnet1).
-  # NatGateway2 n'est créé QUE si NatGatewayStrategy=ha (dans PublicSubnet2).
+  # NatGateway1 est TOUJOURS cree (dans PublicSubnet1).
+  # NatGateway2 n'est cree QUE si NatGatewayStrategy=ha (dans PublicSubnet2).
   # ------------------------------------------------------------------------
   NatGateway1Eip:
     Type: AWS::EC2::EIP
@@ -295,9 +295,9 @@ Resources:
           Value: !Ref Environment
 
   # ------------------------------------------------------------------------
-  # ROUTAGE PRIVÉ — une table PAR AZ (nécessaire même en stratégie "single",
+  # ROUTAGE PRIVe — une table PAR AZ (necessaire même en strategie "single",
   # car c'est ce qui permet de basculer vers "ha" plus tard sans tout
-  # redéployer : seule la route change de cible, la table existe déjà).
+  # redeployer : seule la route change de cible, la table existe deja).
   # ------------------------------------------------------------------------
   PrivateRouteTable1:
     Type: AWS::EC2::RouteTable
@@ -341,8 +341,8 @@ Resources:
     Properties:
       RouteTableId: !Ref PrivateRouteTable2
       DestinationCidrBlock: 0.0.0.0/0
-      # Stratégie "ha"     -> route vers son propre NAT Gateway (AZ2)
-      # Stratégie "single" -> route vers le NAT Gateway unique (AZ1)
+      # Strategie "ha"     -> route vers son propre NAT Gateway (AZ2)
+      # Strategie "single" -> route vers le NAT Gateway unique (AZ1)
       NatGatewayId: !If [UseHaNat, !Ref NatGateway2, !Ref NatGateway1]
 
   PrivateSubnet2RouteTableAssociation:
@@ -353,13 +353,13 @@ Resources:
 
   # ------------------------------------------------------------------------
   # VPC ENDPOINT S3 (Gateway, gratuit)
-  # Décision d'architecture déjà documentée : garder le trafic hors internet
+  # Decision d'architecture deja documentee : garder le trafic hors internet
   # public. ECS tire les layers d'image depuis S3 (backend d'ECR) : sans cet
   # endpoint, ce trafic passerait par le NAT Gateway (coût au Go inutile).
   # Les endpoints Interface (ECR API, Secrets Manager, CloudWatch Logs) ne
-  # sont volontairement PAS créés ici : ils seront ajoutés dans la stack
-  # ECS (ticket futur), car ils nécessitent un security group dédié que le
-  # VPC seul ne peut pas raisonnablement pré-définir.
+  # sont volontairement PAS crees ici : ils seront ajoutes dans la stack
+  # ECS (ticket futur), car ils necessitent un security group dedie que le
+  # VPC seul ne peut pas raisonnablement pre-definir.
   # ------------------------------------------------------------------------
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -420,7 +420,7 @@ Resources:
 
 # ==============================================================================
 # OUTPUTS
-# Exportés avec la même convention de nommage que ecr.yaml / codebuild.yaml,
+# Exportes avec la même convention de nommage que ecr.yaml / codebuild.yaml,
 # pour que les futures stacks (ECS, ALB, CodePipeline) puissent les importer
 # via Fn::ImportValue sans dupliquer de valeurs en dur.
 # ==============================================================================
@@ -457,19 +457,19 @@ Outputs:
       Name: !Sub '${ProjectName}-${Environment}-public-subnet-ids'
 
   PrivateSubnet1Id:
-    Description: ID du subnet privé AZ1 (pour les tâches ECS Fargate)
+    Description: ID du subnet prive AZ1 (pour les taches ECS Fargate)
     Value: !Ref PrivateSubnet1
     Export:
       Name: !Sub '${ProjectName}-${Environment}-private-subnet-1-id'
 
   PrivateSubnet2Id:
-    Description: ID du subnet privé AZ2 (pour les tâches ECS Fargate)
+    Description: ID du subnet prive AZ2 (pour les taches ECS Fargate)
     Value: !Ref PrivateSubnet2
     Export:
       Name: !Sub '${ProjectName}-${Environment}-private-subnet-2-id'
 
   PrivateSubnetIds:
-    Description: Liste des IDs de subnets privés (format prêt pour ECS NetworkConfiguration)
+    Description: Liste des IDs de subnets prives (format prêt pour ECS NetworkConfiguration)
     Value: !Join [',', [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
     Export:
       Name: !Sub '${ProjectName}-${Environment}-private-subnet-ids'
@@ -481,17 +481,17 @@ Outputs:
       Name: !Sub '${ProjectName}-${Environment}-public-rt-id'
 
   PrivateRouteTable1Id:
-    Description: ID de la table de routage privée AZ1
+    Description: ID de la table de routage privee AZ1
     Value: !Ref PrivateRouteTable1
     Export:
       Name: !Sub '${ProjectName}-${Environment}-private-rt-1-id'
 
   PrivateRouteTable2Id:
-    Description: ID de la table de routage privée AZ2
+    Description: ID de la table de routage privee AZ2
     Value: !Ref PrivateRouteTable2
     Export:
       Name: !Sub '${ProjectName}-${Environment}-private-rt-2-id'
 
   NatGatewayStrategy:
-    Description: Stratégie NAT utilisée par cette stack (single ou ha)
+    Description: Strategie NAT utilisee par cette stack (single ou ha)
     Value: !Ref NatGatewayStrategy

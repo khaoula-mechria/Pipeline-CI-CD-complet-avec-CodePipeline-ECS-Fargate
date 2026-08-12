@@ -3,22 +3,22 @@ version: 0.2
 # ==============================================================================
 # buildspec.yml — Pipeline de build de l'application task-manager (Node.js).
 #
-# Ordre des phases (cohérent avec l'architecture documentée du pipeline) :
-#   install    -> dépendances npm + outil SAST
-#   pre_build  -> analyse de sécurité statique (SAST) + login ECR
+# Ordre des phases (coherent avec l'architecture documentee du pipeline) :
+#   install    -> dependances npm + outil SAST
+#   pre_build  -> analyse de securite statique (SAST) + login ECR
 #   build      -> construction de l'image Docker multi-stage
 #   post_build -> tests unitaires + seuil de couverture, puis push ECR
 #
 # Variables ECR_REPOSITORY_URI / AWS_DEFAULT_REGION / AWS_ACCOUNT_ID /
-# PROJECT_NAME / ENVIRONMENT_NAME sont injectées automatiquement par le projet
+# PROJECT_NAME / ENVIRONMENT_NAME sont injectees automatiquement par le projet
 # CodeBuild (voir codebuild.yaml).
 #
-# IMPORTANT — répertoire de travail : CodeBuild exécute TOUTES les commandes
-# depuis la racine du dépôt cloné ($CODEBUILD_SRC_DIR), quel que soit l'endroit
+# IMPORTANT — repertoire de travail : CodeBuild execute TOUTES les commandes
+# depuis la racine du depôt clone ($CODEBUILD_SRC_DIR), quel que soit l'endroit
 # où se trouve ce fichier. Comme l'application vit dans task-manager/, chaque
 # phase commence par un `cd` explicite vers $APP_DIR. Les chemins des sections
-# reports/artifacts/cache, eux, restent relatifs à $CODEBUILD_SRC_DIR et
-# portent donc le préfixe "task-manager/".
+# reports/artifacts/cache, eux, restent relatifs a $CODEBUILD_SRC_DIR et
+# portent donc le prefixe "task-manager/".
 # ==============================================================================
 
 env:
@@ -35,7 +35,7 @@ phases:
     commands:
       - echo "=== INSTALL === $(date)"
       - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
-      - echo "Installation des dépendances de l'application (lockfile figé)"
+      - echo "Installation des dependances de l'application (lockfile fige)"
       - npm ci
       - echo "Installation de Semgrep (outil SAST choisi : CLI-natif, pas de serveur)"
       - pip3 install semgrep --break-system-packages 2>/dev/null || pip3 install semgrep
@@ -44,60 +44,60 @@ phases:
     commands:
       - echo "=== PRE-BUILD === Analyse SAST du code source"
       - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
-      # --error fait sortir semgrep avec un code != 0 si des findings sont trouvés
-      # avec la sévérité ERROR (équivalent "critique" pour notre quality gate).
+      # --error fait sortir semgrep avec un code != 0 si des findings sont trouves
+      # avec la severite ERROR (equivalent "critique" pour notre quality gate).
       # Même commande que dans .github/workflows/ci.yml : les deux gates SAST
       # sont volontairement identiques.
       - semgrep --config auto --error --json --output semgrep-report.json . || SAST_STATUS=$?
       - |
         if [ "${SAST_STATUS:-0}" -ne 0 ]; then
-          echo "❌ Vulnérabilités critiques détectées par Semgrep -> arrêt du build"
+          echo "❌ Vulnerabilites critiques detectees par Semgrep -> arrêt du build"
           cat semgrep-report.json
           exit 1
         fi
-      - echo "✅ SAST OK, aucune vulnérabilité critique"
-      - echo "Connexion à Amazon ECR"
+      - echo "✅ SAST OK, aucune vulnerabilite critique"
+      - echo "Connexion a Amazon ECR"
       - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$ECR_REPOSITORY_URI"
-      # Tag = 8 premiers caractères du SHA du commit (traçabilité build <-> commit)
+      # Tag = 8 premiers caractères du SHA du commit (traçabilite build <-> commit)
       - export IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-8)
       - echo "Tag de l'image pour ce build -> $IMAGE_TAG"
 
   build:
     commands:
       - echo "=== BUILD === Construction de l'image Docker (multi-stage)"
-      # Le contexte de build est task-manager/ : c'est là que vivent le
+      # Le contexte de build est task-manager/ : c'est la que vivent le
       # Dockerfile multi-stage, package.json et le code applicatif.
       - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
       - docker build -t "$ECR_REPOSITORY_URI:$IMAGE_TAG" -t "$ECR_REPOSITORY_URI:latest" .
-      - echo "Taille de l'image générée (cible < 200 Mo) :"
+      - echo "Taille de l'image generee (cible < 200 Mo) :"
       - docker images "$ECR_REPOSITORY_URI:$IMAGE_TAG"
 
   post_build:
     commands:
-      - echo "=== POST-BUILD === Exécution des tests unitaires"
+      - echo "=== POST-BUILD === Execution des tests unitaires"
       - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
-      # PAS de --coverageReporters ici : ça écraserait la liste de
+      # PAS de --coverageReporters ici : ça ecraserait la liste de
       # jest.config.js et supprimerait le rapport HTML et le XML Cobertura
-      # (c'était le cas avant le 2026-07-28 : CodeBuild ne produisait que
-      # json-summary + text, donc US-02 était insatisfiable). jest.config.js
-      # est la source de vérité unique des reporters ET du seuil.
+      # (c'etait le cas avant le 2026-07-28 : CodeBuild ne produisait que
+      # json-summary + text, donc US-02 etait insatisfiable). jest.config.js
+      # est la source de verite unique des reporters ET du seuil.
       - npm test
-      - echo "Vérification du seuil de couverture (${COVERAGE_THRESHOLD}%)"
-      # Jest a déjà fait échouer la commande précédente si le seuil n'était pas
-      # tenu (coverageThreshold). Ce second contrôle reste volontairement là :
-      # il AFFICHE la valeur mesurée dans le log de build (US-02, le Tech Lead
+      - echo "Verification du seuil de couverture (${COVERAGE_THRESHOLD}%)"
+      # Jest a deja fait echouer la commande precedente si le seuil n'etait pas
+      # tenu (coverageThreshold). Ce second contrôle reste volontairement la :
+      # il AFFICHE la valeur mesuree dans le log de build (US-02, le Tech Lead
       # doit pouvoir la lire) et sert de garde-fou si le seuil disparaissait de
       # jest.config.js.
       - |
         COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
-        echo "Couverture mesurée : ${COVERAGE}%"
+        echo "Couverture mesuree : ${COVERAGE}%"
         if (( $(echo "$COVERAGE < $COVERAGE_THRESHOLD" | bc -l) )); then
-          echo "❌ Couverture insuffisante (< ${COVERAGE_THRESHOLD}%) -> échec du pipeline"
+          echo "❌ Couverture insuffisante (< ${COVERAGE_THRESHOLD}%) -> echec du pipeline"
           exit 1
         fi
       # Le rapport HTML est une arborescence de fichiers ; les artefacts de ce
-      # buildspec sont aplatis (discard-paths, imposé par CodeDeployToECS). On
-      # l'archive donc en un seul fichier, téléchargeable depuis les artefacts
+      # buildspec sont aplatis (discard-paths, impose par CodeDeployToECS). On
+      # l'archive donc en un seul fichier, telechargeable depuis les artefacts
       # du build (US-02).
       - echo "Archivage du rapport HTML de couverture"
       - tar -czf coverage-html.tar.gz -C coverage lcov-report
@@ -105,35 +105,35 @@ phases:
       - echo "✅ Tests et couverture OK -> push de l'image vers ECR"
       - docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"
       - docker push "$ECR_REPOSITORY_URI:latest"
-      - echo "✅ Image poussée avec succès -> $ECR_REPOSITORY_URI:$IMAGE_TAG"
+      - echo "✅ Image poussee avec succès -> $ECR_REPOSITORY_URI:$IMAGE_TAG"
       # ======================================================================
-      # SCAN ECR (US-05) — exploite le scan déclenché automatiquement par
-      # ScanOnPush (activé sur le repository dans ecr.yaml).
-      #   - vulnérabilité CRITICAL -> le build échoue, donc le stage Deploy du
-      #     pipeline n'est jamais atteint : le déploiement est bien bloqué ;
-      #   - vulnérabilité HIGH      -> notification SNS, SANS bloquer.
-      # Le gate est ici (et pas dans une action CodePipeline séparée) parce que
-      # c'est le seul endroit qui connaît déjà le tag exact de l'image poussée.
+      # SCAN ECR (US-05) — exploite le scan declenche automatiquement par
+      # ScanOnPush (active sur le repository dans ecr.yaml).
+      #   - vulnerabilite CRITICAL -> le build echoue, donc le stage Deploy du
+      #     pipeline n'est jamais atteint : le deploiement est bien bloque ;
+      #   - vulnerabilite HIGH      -> notification SNS, SANS bloquer.
+      # Le gate est ici (et pas dans une action CodePipeline separee) parce que
+      # c'est le seul endroit qui connaît deja le tag exact de l'image poussee.
       # ======================================================================
       - |
-        echo "=== SCAN ECR === Vulnérabilités de l'image $IMAGE_TAG"
+        echo "=== SCAN ECR === Vulnerabilites de l'image $IMAGE_TAG"
         # ECR_REPOSITORY_URI = <account>.dkr.ecr.<region>.amazonaws.com/<repo>
         ECR_REPO_NAME="${ECR_REPOSITORY_URI##*/}"
         IMAGE_REF="$ECR_REPOSITORY_URI:$IMAGE_TAG"
 
         # ScanOnPush lance le scan tout seul, mais de façon asynchrone : sans
         # cette attente, describe-image-scan-findings renvoie un scan encore
-        # "IN_PROGRESS" et donc zéro finding — le gate passerait à tort.
+        # "IN_PROGRESS" et donc zero finding — le gate passerait a tort.
         if ! aws ecr wait image-scan-complete \
               --repository-name "$ECR_REPO_NAME" \
               --image-id "imageTag=$IMAGE_TAG" 2>scan-wait.err; then
-          echo "❌ Le scan ECR ne s'est pas terminé correctement :"
+          echo "❌ Le scan ECR ne s'est pas termine correctement :"
           cat scan-wait.err
           aws ecr describe-image-scan-findings \
             --repository-name "$ECR_REPO_NAME" \
             --image-id "imageTag=$IMAGE_TAG" \
             --query 'imageScanStatus' --output json || true
-          echo "   Sans résultat de scan, l'absence de vulnérabilité CRITICAL ne"
+          echo "   Sans resultat de scan, l'absence de vulnerabilite CRITICAL ne"
           echo "   peut pas être garantie -> arrêt du build (fail-safe US-05)."
           exit 1
         fi
@@ -142,8 +142,8 @@ phases:
           --repository-name "$ECR_REPO_NAME" \
           --image-id "imageTag=$IMAGE_TAG" > ecr-scan-findings.json
 
-        # findingSeverityCounts n'existe pas du tout quand aucune vulnérabilité
-        # n'est trouvée : chaque compteur retombe donc explicitement sur 0.
+        # findingSeverityCounts n'existe pas du tout quand aucune vulnerabilite
+        # n'est trouvee : chaque compteur retombe donc explicitement sur 0.
         eval "$(node -e "
           const scan = require('./ecr-scan-findings.json');
           const counts = (scan.imageScanFindings && scan.imageScanFindings.findingSeverityCounts) || {};
@@ -152,52 +152,52 @@ phases:
           }
         ")"
 
-        echo "Résultat du scan : CRITICAL=$CRITICAL HIGH=$HIGH MEDIUM=$MEDIUM LOW=$LOW"
+        echo "Resultat du scan : CRITICAL=$CRITICAL HIGH=$HIGH MEDIUM=$MEDIUM LOW=$LOW"
 
         SCAN_MSG=$(printf 'Image    : %s\nCommit   : %s\nCRITICAL : %s\nHIGH     : %s\nMEDIUM   : %s\nLOW      : %s\nBuild    : %s\n' \
           "$IMAGE_REF" "$CODEBUILD_RESOLVED_SOURCE_VERSION" \
           "$CRITICAL" "$HIGH" "$MEDIUM" "$LOW" "$CODEBUILD_BUILD_ID")
 
         if [ "$CRITICAL" -gt 0 ]; then
-          echo "❌ $CRITICAL vulnérabilité(s) CRITICAL -> déploiement bloqué (US-05)"
-          # Notification best-effort : le pipeline notifie déjà l'échec via
-          # EventBridge, mais sans dire POURQUOI. On envoie donc le détail, et
-          # un échec de publication ne doit pas masquer l'échec du build.
+          echo "❌ $CRITICAL vulnerabilite(s) CRITICAL -> deploiement bloque (US-05)"
+          # Notification best-effort : le pipeline notifie deja l'echec via
+          # EventBridge, mais sans dire POURQUOI. On envoie donc le detail, et
+          # un echec de publication ne doit pas masquer l'echec du build.
           aws sns publish \
             --topic-arn "$PIPELINE_NOTIFICATIONS_TOPIC_ARN" \
             --subject "[$PROJECT_NAME-$ENVIRONMENT_NAME] Scan ECR: $CRITICAL CRITICAL - deploiement bloque" \
             --message "$SCAN_MSG" \
-            || echo "⚠️ Publication SNS impossible — le build échoue quand même."
+            || echo "⚠️ Publication SNS impossible — le build echoue quand même."
           exit 1
         fi
 
         if [ "$HIGH" -gt 0 ]; then
-          echo "⚠️ $HIGH vulnérabilité(s) HIGH -> notification SNS, sans blocage (US-05)"
+          echo "⚠️ $HIGH vulnerabilite(s) HIGH -> notification SNS, sans blocage (US-05)"
           aws sns publish \
             --topic-arn "$PIPELINE_NOTIFICATIONS_TOPIC_ARN" \
             --subject "[$PROJECT_NAME-$ENVIRONMENT_NAME] Scan ECR: $HIGH HIGH (non bloquant)" \
             --message "$SCAN_MSG" \
             || echo "⚠️ Publication SNS impossible — le build continue (HIGH non bloquant)."
         else
-          echo "✅ Aucune vulnérabilité CRITICAL ni HIGH"
+          echo "✅ Aucune vulnerabilite CRITICAL ni HIGH"
         fi
-      - echo "Génération de imageDetail.json (format attendu par l'action"
+      - echo "Generation de imageDetail.json (format attendu par l'action"
       - echo "CodePipeline CodeDeployToECS — PAS le même format que"
-      - echo "imagedefinitions.json utilisé par l'action ECS standard)"
+      - echo "imagedefinitions.json utilise par l'action ECS standard)"
       - printf '{"ImageURI":"%s"}' "$ECR_REPOSITORY_URI:$IMAGE_TAG" > imageDetail.json
-      - echo "Rendu de taskdef.json à partir du template versionné (ARN des"
-      - echo "rôles ECS injectés par convention de nommage, cf. iam.yaml ;"
-      - echo "voir infrastructure/cloudformation/pipeline.yml pour le détail)"
+      - echo "Rendu de taskdef.json a partir du template versionne (ARN des"
+      - echo "rôles ECS injectes par convention de nommage, cf. iam.yaml ;"
+      - echo "voir infrastructure/cloudformation/pipeline.yml pour le detail)"
       # Les ARN de secrets viennent de secrets-manager.yaml via les variables
       # d'environnement du projet CodeBuild (cf. codebuild.yaml) : ce sont des
-      # identifiants, jamais les valeurs des secrets (F3). Le build échoue tôt
+      # identifiants, jamais les valeurs des secrets (F3). Le build echoue tôt
       # et explicitement s'ils manquent, plutôt que de produire un taskdef.json
-      # avec des placeholders non substitués qui ferait échouer le déploiement
+      # avec des placeholders non substitues qui ferait echouer le deploiement
       # ECS bien plus loin.
       - |
         for VAR in DB_SECRET_ARN API_KEY_SECRET_ARN; do
           if [ -z "$(eval echo \"\$$VAR\")" ]; then
-            echo "❌ $VAR est vide : la stack secrets-manager.yaml est-elle déployée ?"
+            echo "❌ $VAR est vide : la stack secrets-manager.yaml est-elle deployee ?"
             exit 1
           fi
         done
@@ -214,19 +214,19 @@ phases:
       # aucune valeur — ce cat reste donc sûr dans les logs CodeBuild.
       - cat taskdef.json
 
-# Chemins ci-dessous : relatifs à $CODEBUILD_SRC_DIR (racine du dépôt), pas au
-# répertoire de travail des phases.
+# Chemins ci-dessous : relatifs a $CODEBUILD_SRC_DIR (racine du depôt), pas au
+# repertoire de travail des phases.
 reports:
-  # Résultats des tests : CodeBuild affiche le détail par test (succès/échecs,
-  # durées) dans l'onglet "Reports" de la console.
+  # Resultats des tests : CodeBuild affiche le detail par test (succès/echecs,
+  # durees) dans l'onglet "Reports" de la console.
   unit-tests:
     files:
       - 'junit.xml'
     file-format: JUNITXML
     base-directory: 'task-manager/reports'
-  # Couverture de code : CodeBuild sait interpréter nativement le format
+  # Couverture de code : CodeBuild sait interpreter nativement le format
   # Cobertura et affiche le pourcentage de lignes/branches couvertes, avec son
-  # évolution d'un build à l'autre — c'est la réponse la plus directe à US-02
+  # evolution d'un build a l'autre — c'est la reponse la plus directe a US-02
   # ("visualiser la couverture de tests dans chaque build").
   code-coverage:
     files:
@@ -238,13 +238,13 @@ artifacts:
   files:
     - task-manager/imageDetail.json
     - task-manager/taskdef.json
-    # Rapport HTML de couverture, archivé pour survivre à discard-paths.
+    # Rapport HTML de couverture, archive pour survivre a discard-paths.
     - task-manager/coverage-html.tar.gz
-    # Résultat brut du scan ECR (US-05) : conservé pour pouvoir analyser les
-    # CVE remontées, y compris quand le build a été bloqué.
+    # Resultat brut du scan ECR (US-05) : conserve pour pouvoir analyser les
+    # CVE remontees, y compris quand le build a ete bloque.
     - task-manager/ecr-scan-findings.json
   # Aplatit les chemins : l'action CodeDeployToECS attend imageDetail.json et
-  # taskdef.json à la racine de l'artefact de build.
+  # taskdef.json a la racine de l'artefact de build.
   discard-paths: yes
 
 cache:

@@ -3,13 +3,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Cluster ECS Fargate pour le projet (CI/CD AWS).
   Extrait de pipeline.yml pour suivre la structure modulaire : ecs-cluster.yaml
-  ne contient QUE le cluster lui-même (aucune tâche/service ici, voir
-  ecs-task-definition.yaml et ecs-service.yaml). Container Insights activé
-  pour le monitoring CPU/Mémoire/réseau par service (visible dans le
+  ne contient QUE le cluster lui-meme (aucune tache/service ici, voir
+  ecs-task-definition.yaml et ecs-service.yaml). Container Insights active
+  pour le monitoring CPU/Memoire/reseau par service (visible dans le
   dashboard CloudWatch de observability.yml).
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DÉPLOIEMENT (liste de référence du projet) :
+# NOTE SUR L'ORDRE DE DePLOIEMENT (liste de reference du projet) :
 #   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
 #   5. codebuild.yaml
 #   6. ecs-cluster.yaml   <- cette stack
@@ -28,17 +28,17 @@ Parameters:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre à l'Environment des autres stacks.
+    Description: Doit correspondre a l'Environment des autres stacks.
 
 Resources:
 
   # ==========================================================================
   # CLUSTER ECS FARGATE
-  # Pas d'instances EC2 à gérer (Fargate = serverless) : le cluster n'est
-  # qu'un regroupement logique de services/tâches. ContainerInsights donne
-  # des métriques détaillées par service (CPU/Mémoire/réseau/stockage) en
-  # plus des métriques de base AWS/ECS déjà utilisées par le dashboard —
-  # activé explicitement car désactivé par défaut sur un nouveau cluster.
+  # Pas d'instances EC2 a gerer (Fargate = serverless) : le cluster n'est
+  # qu'un regroupement logique de services/taches. ContainerInsights donne
+  # des metriques detaillees par service (CPU/Memoire/reseau/stockage) en
+  # plus des metriques de base AWS/ECS deja utilisees par le dashboard —
+  # active explicitement car desactive par defaut sur un nouveau cluster.
   # ==========================================================================
   EcsCluster:
     Type: AWS::ECS::Cluster
@@ -56,7 +56,7 @@ Resources:
 Outputs:
 
   EcsClusterName:
-    Description: Nom du cluster ECS (utilisé par ecs-service.yaml et pipeline.yaml)
+    Description: Nom du cluster ECS (utilise par ecs-service.yaml et pipeline.yaml)
     Value: !Ref EcsCluster
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-name'

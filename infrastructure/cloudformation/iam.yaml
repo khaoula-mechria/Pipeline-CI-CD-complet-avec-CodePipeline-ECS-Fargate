@@ -1,26 +1,26 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Rôles IAM et connexion GitHub, prérequis avant pipeline.yml et ecs.yaml.
+  Roles IAM et connexion GitHub, prerequis avant pipeline.yml et ecs.yaml.
   - CodePipelineServiceRole : permissions pour orchestrer source/build/deploy.
-  - CodeDeployServiceRole   : permissions pour le déploiement Blue/Green ECS.
-  - EcsTaskExecutionRole    : permissions pour qu'ECS Fargate DÉMARRE la tâche
-                              (pull image ECR, écrire les logs, lire les secrets).
+  - CodeDeployServiceRole   : permissions pour le deploiement Blue/Green ECS.
+  - EcsTaskExecutionRole    : permissions pour qu'ECS Fargate DeMARRE la tache
+                              (pull image ECR, ecrire les logs, lire les secrets).
   - EcsTaskRole             : permissions pour le CODE APPLICATIF pendant son
-                              exécution (à enrichir selon les besoins de l'app).
+                              execution (a enrichir selon les besoins de l'app).
   - GitHubConnection        : pont CodeStar Connections entre GitHub et
-                              CodePipeline (nécessite une autorisation manuelle
-                              unique dans la console après déploiement).
+                              CodePipeline (necessite une autorisation manuelle
+                              unique dans la console apres deploiement).
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DÉPLOIEMENT :
+# NOTE SUR L'ORDRE DE DePLOIEMENT :
 #   1. vpc.yml   2. iam.yaml   <- cette stack
 #   3. secrets-manager.yaml   4. ecr.yaml   5. codebuild.yaml
 #   6. ecs-cluster.yaml   7. alb.yaml   8. ecs-task-definition.yaml
 #   9. ecs-service.yaml   10. pipeline.yml   11. observability.yml
 #
 # iam.yaml n'importe rien d'autre que l'ARN du repo ECR (statement ECR de
-# CodeBuild) et se déploie donc très tôt : la plupart des stacks suivantes
+# CodeBuild) et se deploie donc tres tôt : la plupart des stacks suivantes
 # importent ses rôles.
 # ------------------------------------------------------------------
 
@@ -35,18 +35,18 @@ Parameters:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre à l'Environment des autres stacks.
+    Description: Doit correspondre a l'Environment des autres stacks.
 
 Resources:
 
   # ==========================================================================
   # CONNEXION GITHUB (CodeStar Connections)
-  # Remplace le token OAuth utilisé par CodeBuild seul : c'est LE mécanisme
-  # officiel pour que CodePipeline déclenche sur push GitHub sans stocker
-  # de credentials. La ressource se crée en état "PENDING" : une autorisation
+  # Remplace le token OAuth utilise par CodeBuild seul : c'est LE mecanisme
+  # officiel pour que CodePipeline declenche sur push GitHub sans stocker
+  # de credentials. La ressource se cree en etat "PENDING" : une autorisation
   # manuelle dans la console AWS (Developer Tools > Connections) est
-  # OBLIGATOIRE une seule fois après le déploiement — impossible à automatiser
-  # entièrement en CloudFormation, c'est une limite connue du service.
+  # OBLIGATOIRE une seule fois apres le deploiement — impossible a automatiser
+  # entierement en CloudFormation, c'est une limite connue du service.
   # ==========================================================================
   GitHubConnection:
     Type: AWS::CodeStarConnections::Connection
@@ -62,8 +62,8 @@ Resources:
   # ==========================================================================
   # RÔLE CODEPIPELINE
   # Endosse par le service codepipeline.amazonaws.com pour orchestrer les
-  # stages Source -> Build -> Deploy. Chaque permission est restreinte à la
-  # ressource précise dont ce projet a besoin (pas de "*" sauf quand le
+  # stages Source -> Build -> Deploy. Chaque permission est restreinte a la
+  # ressource precise dont ce projet a besoin (pas de "*" sauf quand le
   # service AWS l'exige explicitement).
   # ==========================================================================
   CodePipelineServiceRole:
@@ -83,12 +83,12 @@ Resources:
             Version: '2012-10-17'
             Statement:
 
-              # Stage Source : lire/écrire les artefacts dans le bucket S3
-              # dédié au pipeline. Le bucket sera créé DANS pipeline.yaml
-              # (pas ici) ; on référence son nom par CONVENTION plutôt que
-              # par Fn::ImportValue, pour éviter une dépendance circulaire
+              # Stage Source : lire/ecrire les artefacts dans le bucket S3
+              # dedie au pipeline. Le bucket sera cree DANS pipeline.yaml
+              # (pas ici) ; on reference son nom par CONVENTION plutôt que
+              # par Fn::ImportValue, pour eviter une dependance circulaire
               # entre iam.yaml et pipeline.yaml (le rôle doit exister AVANT
-              # le pipeline, mais le pipeline crée le bucket).
+              # le pipeline, mais le pipeline cree le bucket).
               - Sid: PipelineArtifactsBucketAccess
                 Effect: Allow
                 Action:
@@ -100,8 +100,8 @@ Resources:
                   - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-pipeline-artifacts-${AWS::AccountId}'
                   - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-pipeline-artifacts-${AWS::AccountId}/*'
 
-              # Stage Source : utiliser la connexion GitHub créée ci-dessus
-              # (restreint à CETTE connexion précise, pas toutes les connexions
+              # Stage Source : utiliser la connexion GitHub creee ci-dessus
+              # (restreint a CETTE connexion precise, pas toutes les connexions
               # du compte)
               - Sid: UseGitHubConnection
                 Effect: Allow
@@ -110,9 +110,9 @@ Resources:
                 Resource:
                   - !Ref GitHubConnection
 
-              # Stage Build : déclencher UNIQUEMENT le projet CodeBuild créé
-              # dans codebuild.yaml (import de son ARN exporté -> pas de
-              # duplication, cohérence garantie entre les stacks)
+              # Stage Build : declencher UNIQUEMENT le projet CodeBuild cree
+              # dans codebuild.yaml (import de son ARN exporte -> pas de
+              # duplication, coherence garantie entre les stacks)
               - Sid: TriggerCodeBuild
                 Effect: Allow
                 Action:
@@ -124,8 +124,8 @@ Resources:
 
               # Stage Deploy : piloter CodeDeploy pour le Blue/Green ECS.
               # Restreint par CONVENTION DE NOMMAGE (l'application et le
-              # deployment group CodeDeploy seront créés dans pipeline.yaml,
-              # donc pas encore d'ARN réel à importer à ce stade).
+              # deployment group CodeDeploy seront crees dans pipeline.yaml,
+              # donc pas encore d'ARN reel a importer a ce stade).
               - Sid: TriggerCodeDeploy
                 Effect: Allow
                 Action:
@@ -141,14 +141,14 @@ Resources:
                   - !Sub 'arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentconfig:*'
 
               # Action CodePipeline "CodeDeployToECS" (Blue/Green ECS, PAS le
-              # provider CodeDeploy générique ci-dessus) : à chaque exécution,
-              # CodePipeline génère lui-même une NOUVELLE révision de la task
-              # definition à partir de taskdef.json + imageDetail.json, AVANT
-              # de déclencher CodeDeploy. Ça nécessite deux permissions
-              # documentées par AWS spécifiquement pour ce provider
+              # provider CodeDeploy generique ci-dessus) : a chaque execution,
+              # CodePipeline genere lui-même une NOUVELLE revision de la task
+              # definition a partir de taskdef.json + imageDetail.json, AVANT
+              # de declencher CodeDeploy. Ça necessite deux permissions
+              # documentees par AWS specifiquement pour ce provider
               # (docs.aws.amazon.com/codepipeline/.../action-reference-ECSbluegreen.html#edit-role-codedeploy-ecs),
               # absentes du bloc TriggerCodeDeploy ci-dessus : sans elles, le
-              # stage Deploy échoue à l'enregistrement de la task definition.
+              # stage Deploy echoue a l'enregistrement de la task definition.
               - Sid: AllowEcsRegisterTaskDefinitionForBlueGreen
                 Effect: Allow
                 Action:
@@ -157,16 +157,16 @@ Resources:
                 # ARN (contrainte AWS, comme ecr:GetAuthorizationToken).
                 Resource: '*'
 
-              # iam:PassRole restreint aux DEUX rôles de tâche ECS définis
+              # iam:PassRole restreint aux DEUX rôles de tache ECS definis
               # plus bas dans CE MÊME template (EcsTaskExecutionRole /
-              # EcsTaskRole) : nécessaire pour que CodePipeline puisse les
-              # associer à la nouvelle révision de task definition qu'il
+              # EcsTaskRole) : necessaire pour que CodePipeline puisse les
+              # associer a la nouvelle revision de task definition qu'il
               # enregistre. Condition iam:PassedToService pour empêcher que
-              # ce rôle serve à passer ces ARN à un autre service qu'ECS.
+              # ce rôle serve a passer ces ARN a un autre service qu'ECS.
               # ARN construit par convention de nommage (comme TriggerCodeDeploy
-              # plus haut) plutôt que par !GetAtt, pour rester cohérent avec le
-              # reste du fichier et éviter toute dépendance à l'ordre de
-              # création entre rôles du même template.
+              # plus haut) plutôt que par !GetAtt, pour rester coherent avec le
+              # reste du fichier et eviter toute dependance a l'ordre de
+              # creation entre rôles du même template.
               - Sid: PassEcsRolesForBlueGreenDeployment
                 Effect: Allow
                 Action:
@@ -186,11 +186,11 @@ Resources:
               # C'est CETTE permission qu'utilise le stage Approval de
               # pipeline.yml : quand le pipeline se met en attente, CodePipeline
               # publie lui-même le message d'approbation (avec le lien) via le
-              # rôle de service, grâce au NotificationArn de l'action. Le
-              # statement existait déjà en prévision de ce stage — il est
-              # maintenant réellement utilisé.
+              # rôle de service, grace au NotificationArn de l'action. Le
+              # statement existait deja en prevision de ce stage — il est
+              # maintenant reellement utilise.
               #
-              # Aucune modification de la policy du topic SNS n'est nécessaire :
+              # Aucune modification de la policy du topic SNS n'est necessaire :
               # en intra-compte, cette autorisation identity-based suffit.
               - Sid: PublishPipelineNotifications
                 Effect: Allow
@@ -207,11 +207,11 @@ Resources:
 
   # ==========================================================================
   # RÔLE CODEDEPLOY
-  # On utilise la politique managée officielle AWS pour le Blue/Green ECS :
-  # elle couvre déjà ecs:*, elasticloadbalancing:*, et un iam:PassRole
+  # On utilise la politique managee officielle AWS pour le Blue/Green ECS :
+  # elle couvre deja ecs:*, elasticloadbalancing:*, et un iam:PassRole
   # correctement restreint (condition iam:PassedToService=ecs-tasks) pour
-  # passer les rôles de tâche ECS. Réécrire ces permissions à la main serait
-  # plus risqué (facile d'oublier une permission) que fiable.
+  # passer les rôles de tache ECS. Reecrire ces permissions a la main serait
+  # plus risque (facile d'oublier une permission) que fiable.
   # ==========================================================================
   CodeDeployServiceRole:
     Type: AWS::IAM::Role
@@ -233,11 +233,11 @@ Resources:
           Value: !Ref Environment
 
   # ==========================================================================
-  # RÔLE D'EXÉCUTION ECS (EcsTaskExecutionRole)
-  # Utilisé par l'AGENT ECS (pas ton code applicatif) pour DÉMARRER le
-  # conteneur : pull de l'image ECR, écriture des logs vers CloudWatch,
+  # RÔLE D'EXeCUTION ECS (EcsTaskExecutionRole)
+  # Utilise par l'AGENT ECS (pas ton code applicatif) pour DeMARRER le
+  # conteneur : pull de l'image ECR, ecriture des logs vers CloudWatch,
   # et lecture des secrets Secrets Manager pour les injecter au runtime
-  # (décision d'architecture déjà documentée : jamais de secret en clair
+  # (decision d'architecture deja documentee : jamais de secret en clair
   # dans les variables d'environnement du template).
   # ==========================================================================
   EcsTaskExecutionRole:
@@ -251,7 +251,7 @@ Resources:
             Principal:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
-      # Politique managée officielle AWS : pull ECR + logs CloudWatch.
+      # Politique managee officielle AWS : pull ECR + logs CloudWatch.
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
       Policies:
@@ -259,31 +259,31 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # Permission utilisée par l'AGENT ECS (pas par le code applicatif)
-              # pour lire les secrets déclarés dans le bloc Secrets de la task
-              # definition, au démarrage de chaque tâche. Sans elle, les tâches
-              # échouent avec ResourceInitializationError.
+              # Permission utilisee par l'AGENT ECS (pas par le code applicatif)
+              # pour lire les secrets declares dans le bloc Secrets de la task
+              # definition, au demarrage de chaque tache. Sans elle, les taches
+              # echouent avec ResourceInitializationError.
               - Sid: ReadAppSecrets
                 Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  # Restriction par préfixe de nom plutôt que par ARN importé
+                  # Restriction par prefixe de nom plutôt que par ARN importe
                   # de secrets-manager.yaml : le wildcard couvre le suffixe
-                  # aléatoire de 6 caractères qu'AWS ajoute aux ARN de secrets,
-                  # et surtout ça garde iam.yaml sans dépendance vers la stack
-                  # de secrets — iam.yaml se déploie en 2e position, avant elle,
+                  # aleatoire de 6 caracteres qu'AWS ajoute aux ARN de secrets,
+                  # et surtout ça garde iam.yaml sans dependance vers la stack
+                  # de secrets — iam.yaml se deploie en 2e position, avant elle,
                   # et beaucoup d'autres stacks importent ses rôles.
                   # La restriction reste stricte : ce rôle ne peut lire QUE les
                   # secrets de ce projet et de cet environnement.
                   - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/${Environment}/*'
               # PAS de kms:Decrypt ici, volontairement : les secrets de
-              # secrets-manager.yaml utilisent la clé gérée par AWS
+              # secrets-manager.yaml utilisent la cle geree par AWS
               # (alias/aws/secretsmanager), pour laquelle aucune permission KMS
-              # explicite n'est requise. Si un jour un secret est chiffré avec
-              # une clé KMS gérée par le client, il FAUDRA ajouter ici un
-              # statement kms:Decrypt sur l'ARN de cette clé, sinon les tâches
-              # ECS ne démarreront plus.
+              # explicite n'est requise. Si un jour un secret est chiffre avec
+              # une cle KMS geree par le client, il FAUDRA ajouter ici un
+              # statement kms:Decrypt sur l'ARN de cette cle, sinon les taches
+              # ECS ne demarreront plus.
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -292,12 +292,12 @@ Resources:
 
   # ==========================================================================
   # RÔLE APPLICATIF ECS (EcsTaskRole)
-  # Utilisé par TON CODE (le task manager Node.js) pendant qu'il tourne, si
-  # jamais il a besoin d'appeler l'API AWS lui-même (ex: écrire une métrique
-  # custom). Volontairement minimal pour l'instant : à enrichir dès que
-  # l'application a un besoin identifié (ex: DynamoDB, S3, SQS...). Ne JAMAIS
-  # réutiliser EcsTaskExecutionRole pour ça — ce sont deux responsabilités
-  # distinctes par design AWS (démarrage du conteneur vs code applicatif).
+  # Utilise par TON CODE (le task manager Node.js) pendant qu'il tourne, si
+  # jamais il a besoin d'appeler l'API AWS lui-même (ex: ecrire une metrique
+  # custom). Volontairement minimal pour l'instant : a enrichir des que
+  # l'application a un besoin identifie (ex: DynamoDB, S3, SQS...). Ne JAMAIS
+  # reutiliser EcsTaskExecutionRole pour ça — ce sont deux responsabilites
+  # distinctes par design AWS (demarrage du conteneur vs code applicatif).
   # ==========================================================================
   EcsTaskRole:
     Type: AWS::IAM::Role
@@ -315,9 +315,9 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # Permission minimale de départ : envoyer des métriques custom
-              # CloudWatch depuis l'app. Ajoute ici les permissions réelles
-              # (DynamoDB, S3...) au fur et à mesure des besoins de l'app.
+              # Permission minimale de depart : envoyer des metriques custom
+              # CloudWatch depuis l'app. Ajoute ici les permissions reelles
+              # (DynamoDB, S3...) au fur et a mesure des besoins de l'app.
               - Sid: PublishCustomMetrics
                 Effect: Allow
                 Action:
@@ -336,33 +336,33 @@ Outputs:
 
   GitHubConnectionArn:
     Description: >
-      ARN de la connexion GitHub. État "PENDING" après déploiement :
+      ARN de la connexion GitHub. etat "PENDING" apres deploiement :
       va dans la console AWS (Developer Tools > Connections) pour
-      l'autoriser manuellement avant de déployer pipeline.yaml.
+      l'autoriser manuellement avant de deployer pipeline.yaml.
     Value: !Ref GitHubConnection
     Export:
       Name: !Sub '${ProjectName}-${Environment}-github-connection-arn'
 
   CodePipelineServiceRoleArn:
-    Description: ARN du rôle utilisé par pipeline.yaml
+    Description: ARN du rôle utilise par pipeline.yaml
     Value: !GetAtt CodePipelineServiceRole.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-codepipeline-role-arn'
 
   CodeDeployServiceRoleArn:
-    Description: ARN du rôle utilisé par le Deployment Group CodeDeploy dans pipeline.yaml
+    Description: ARN du rôle utilise par le Deployment Group CodeDeploy dans pipeline.yaml
     Value: !GetAtt CodeDeployServiceRole.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-codedeploy-role-arn'
 
   EcsTaskExecutionRoleArn:
-    Description: ARN du rôle d'exécution utilisé par la Task Definition ECS dans ecs.yaml
+    Description: ARN du rôle d'execution utilise par la Task Definition ECS dans ecs.yaml
     Value: !GetAtt EcsTaskExecutionRole.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-execution-role-arn'
 
   EcsTaskRoleArn:
-    Description: ARN du rôle applicatif utilisé par la Task Definition ECS dans ecs.yaml
+    Description: ARN du rôle applicatif utilise par la Task Definition ECS dans ecs.yaml
     Value: !GetAtt EcsTaskRole.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-task-role-arn'
