@@ -37,7 +37,7 @@ phases:
       - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
       - echo "Installation des dependances de l'application (lockfile fige)"
       - npm ci
-      - echo "Installation de Semgrep (outil SAST choisi : CLI-natif, pas de serveur)"
+      - 'echo "Installation de Semgrep (outil SAST choisi : CLI-natif, pas de serveur)"'
       - pip3 install semgrep --break-system-packages 2>/dev/null || pip3 install semgrep
 
   pre_build:
