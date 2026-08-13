@@ -1,17 +1,16 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  CodePipeline + CodeDeploy Blue/Green pour le projet (CI/CD AWS).
-  Assemble UNIQUEMENT l'orchestration CI/CD : ALB, cluster/service/task
-  definition ECS ont ete extraits dans des stacks dediees (alb.yaml,
-  ecs-cluster.yaml, ecs-service.yaml, ecs-task-definition.yaml) pour suivre
-  une structure modulaire - cette stack les reference par Fn::ImportValue,
-  elle ne recree rien.
-  - Bucket S3 d'artefacts + topic SNS + regle EventBridge de notification.
-  - CodeDeploy Application + DeploymentGroup (Blue/Green, traffic shift
-    progressif, rollback automatique sur echec) - voir "CHOIX Blue/Green"
-    ci-dessous.
-  - CodePipeline (Source GitHub -> Build CodeBuild -> Deploy CodeDeployToECS).
+  CodePipeline + CodeDeploy Blue/Green for the project (AWS CI/CD).
+  Assembles ONLY the CI/CD orchestration: the ALB, ECS cluster/service/task
+  definition have been extracted into dedicated stacks (alb.yaml,
+  ecs-cluster.yaml, ecs-service.yaml, ecs-task-definition.yaml) to keep a
+  modular structure. This stack references them via Fn::ImportValue and does not
+  recreate them.
+  - S3 artifacts bucket + SNS topic + EventBridge notification rule.
+  - CodeDeploy Application + DeploymentGroup (Blue/Green, gradual traffic shift,
+    automatic rollback on failure) - see "Blue/Green choice" below.
+  - CodePipeline (GitHub Source -> CodeBuild Build -> CodeDeployToECS Deploy).
 
 # ------------------------------------------------------------------
 # CHOIX Blue/Green vs Rolling :
@@ -59,48 +58,47 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName des autres stacks.
+    Description: Must match the ProjectName of the other stacks.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre a l'Environment des autres stacks.
+    Description: Must match the Environment of the other stacks.
 
   FullRepositoryId:
     Type: String
     Default: ton-user/taskmanager
     Description: >
-      Depôt GitHub au format 'owner/repo', utilise par le stage Source
-      (action CodeStarSourceConnection). Doit être le même depôt que
-      GitHubRepoUrl dans codebuild.yaml.
+      GitHub repository in 'owner/repo' format, used by the Source stage
+      (CodeStarSourceConnection action). It must be the same repository as
+      GitHubRepoUrl in codebuild.yaml.
 
   BranchName:
     Type: String
     Default: main
     Description: >
-      Branche surveillee par ce pipeline. Volontairement une seule branche
-      (main) : la validation build/test des branches feature/* est deja
-      couverte independamment par le webhook CodeBuild (codebuild.yaml,
-      declenche sur main OU develop) — pas besoin d'un second pipeline pour
-      ça.
+      Branch monitored by this pipeline. Intentionally only one branch (main):
+      build/test validation for feature/* branches is already covered
+      independently by the CodeBuild webhook (codebuild.yaml, triggered on main
+      or develop). No second pipeline is needed for that.
 
   EnableManualApproval:
     Type: String
     Default: 'true'
     AllowedValues: ['true', 'false']
     Description: >
-      Active le stage d'approbation manuelle entre Build et Deploy.
-      a 'true' (defaut), le pipeline s'arrête apres le Build et attend une
-      approbation humaine : c'est ce qui donne un etat "approval pending" a
-      notifier (F4 du cahier des charges).
-      TENSION ASSUMeE AVEC US-01 : cette user story (Must Have) demande que le
-      deploiement soit declenche "sans intervention manuelle". Les deux
-      exigences du CDC sont donc contradictoires par construction. Ce parametre
-      permet de trancher par environnement plutôt que globalement : garder
-      'true' en prod (garde-fou avant mise en production) et passer 'false' en
-      dev/staging pour retrouver le deploiement 100 % automatique de US-01 et
-      l'objectif de cycle < 10 min (§1.2).
+      Enables the manual approval stage between Build and Deploy.
+      With 'true' (default), the pipeline stops after Build and waits for human
+      approval: this creates the "approval pending" state to notify (F4 of the
+      requirements).
+      TENSION ASSUMED WITH US-01: this user story (Must Have) requires deployment
+      to be triggered "without manual intervention". The two requirements in the
+      functional specification are therefore inherently contradictory. This
+      parameter allows the decision to be made per environment rather than
+      globally: keep 'true' in prod (safety gate before production) and set it
+      to 'false' in dev/staging to restore 100% automatic deployment for US-01
+      and the <10 minute cycle goal (§1.2).
 
 Conditions:
   # Contrôle l'inclusion du stage Approval dans le pipeline (voir le parametre
@@ -400,59 +398,58 @@ Resources:
 
 Outputs:
 
-  # Les 5 outputs ci-dessous sont des valeurs INFORMATIVES qui pointent vers
-  # des exports desormais produits par alb.yaml/ecs-cluster.yaml/
-  # ecs-service.yaml — SANS Export ici (le nom est deja exporte par ces
-  # stacks ; CloudFormation refuse qu'un même nom d'export existe deux fois).
-  # observability.yaml importe ces mêmes noms directement depuis les
-  # nouvelles stacks : aucune modification n'y est necessaire.
+  # The 5 outputs below are INFORMATIONAL values pointing to exports now produced
+  # by alb.yaml / ecs-cluster.yaml / ecs-service.yaml - WITHOUT an export here
+  # (the name is already exported by those stacks; CloudFormation rejects two
+  # exports with the same name). observability.yaml imports these same names
+  # directly from the new stacks: no change is required there.
   LoadBalancerDnsName:
-    Description: DNS de l'ALB (point d'entree public de l'application)
+    Description: ALB DNS name (public entry point for the application)
     Value: !ImportValue
       'Fn::Sub': '${ProjectName}-${Environment}-alb-dns'
 
   AlbFullName:
     Description: >
-      Nom "full name" de l'ALB — requis comme dimension CloudWatch par la
-      stack d'observabilite (export d'origine : alb.yaml).
+      Full name of the ALB - required as a CloudWatch dimension by the
+      observability stack (origin export: alb.yaml).
     Value: !ImportValue
       'Fn::Sub': '${ProjectName}-${Environment}-alb-full-name'
 
   BlueTargetGroupFullName:
     Description: >
-      Nom "full name" du target group Blue — pour observability.yaml
-      (dimension TargetGroup, HealthyHostCount ; export d'origine : alb.yaml).
+      Full name of the Blue target group - for observability.yaml
+      (TargetGroup dimension, HealthyHostCount; origin export: alb.yaml).
     Value: !ImportValue
       'Fn::Sub': '${ProjectName}-${Environment}-tg-blue-full-name'
 
   EcsClusterName:
-    Description: "Nom du cluster ECS Fargate (export d'origine : ecs-cluster.yaml)"
+    Description: "Name of the ECS Fargate cluster (origin export: ecs-cluster.yaml)"
     Value: !ImportValue
       'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
 
   EcsServiceName:
-    Description: "Nom du service ECS Fargate (export d'origine : ecs-service.yaml)"
+    Description: "Name of the ECS Fargate service (origin export: ecs-service.yaml)"
     Value: !ImportValue
       'Fn::Sub': '${ProjectName}-${Environment}-ecs-service-name'
 
   CodePipelineName:
-    Description: Nom du pipeline CodePipeline
+    Description: Name of the CodePipeline pipeline
     Value: !Sub '${ProjectName}-${Environment}-pipeline'
 
   CodeDeployApplicationName:
-    Description: Nom de l'application CodeDeploy
+    Description: Name of the CodeDeploy application
     Value: !Sub '${ProjectName}-${Environment}-app'
 
   CodeDeployDeploymentGroupName:
-    Description: Nom du deployment group CodeDeploy
+    Description: Name of the CodeDeploy deployment group
     Value: !Sub '${ProjectName}-${Environment}-dg'
 
   PipelineArtifactsBucketName:
-    Description: Nom du bucket S3 d'artefacts du pipeline
+    Description: Name of the S3 artifact bucket for the pipeline
     Value: !Ref PipelineArtifactsBucket
 
   PipelineNotificationsTopicArn:
-    Description: ARN du topic SNS de notifications du pipeline
+    Description: ARN of the pipeline notification SNS topic
     Value: !Ref PipelineNotificationsTopic
     Export:
       Name: !Sub '${ProjectName}-${Environment}-pipeline-notifications-arn'

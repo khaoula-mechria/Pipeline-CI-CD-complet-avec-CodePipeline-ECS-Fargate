@@ -1,16 +1,16 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Auto Scaling du service ECS Fargate (Application Auto Scaling) pour le projet
-  (CI/CD AWS).
-  F3 du cahier des charges : "Le nombre de taches Fargate scale automatiquement
-  selon la charge CPU (HPA-like via Application Auto Scaling)".
-  - ScalableTarget sur ecs:service:DesiredCount (min/max parametrables).
-  - ScalingPolicy de type Target Tracking sur le CPU moyen du service
-    (cible 70% par defaut).
-  - 2 alarmes CloudWatch d'OBSERVABILITE (CPU soutenu, capacite max atteinte)
-    qui notifient le topic SNS du pipeline. Elles ne pilotent PAS le scaling
-    (voir la note ci-dessous) : elles avertissent l'equipe.
+  Auto Scaling for the ECS Fargate service (Application Auto Scaling) for the
+  project (AWS CI/CD).
+  F3 of the requirements: "The number of Fargate tasks scales automatically
+  according to CPU load (HPA-like via Application Auto Scaling)".
+  - ScalableTarget on ecs:service:DesiredCount (min/max configurable).
+  - Target Tracking ScalingPolicy on the average CPU of the service
+    (target 70% by default).
+  - 2 CloudWatch observability alarms (sustained CPU, maximum capacity reached)
+    notifying the pipeline SNS topic. They do NOT control scaling (see the note
+    below): they warn the team.
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DePLOIEMENT (voir ecs-cluster.yaml) :
@@ -52,7 +52,7 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName des autres stacks.
+    Description: Must match the ProjectName of the other stacks.
 
   Environment:
     Type: String
@@ -61,23 +61,23 @@ Parameters:
       - dev
       - staging
       - prod
-    Description: Doit correspondre a l'Environment des autres stacks.
+    Description: Must match the Environment of the other stacks.
 
   MinCapacity:
     Type: Number
     Default: 2
     MinValue: 1
     Description: >
-      Nombre minimum de taches Fargate. Garder >= 2 pour rester reparti sur
-      2 AZ (coherent avec le DesiredCount par defaut de ecs-service.yaml).
+      Minimum number of Fargate tasks. Keep >= 2 to remain distributed across
+      2 AZs (consistent with the default DesiredCount in ecs-service.yaml).
 
   MaxCapacity:
     Type: Number
     Default: 6
     MinValue: 1
     Description: >
-      Nombre maximum de taches Fargate. Plafond de coût autant que de charge :
-      6 taches a 256 CPU / 512 Mo restent modestes.
+      Maximum number of Fargate tasks. This is both a cost and load ceiling:
+      6 tasks at 256 CPU / 512 MB remain modest.
 
   TargetCpuUtilization:
     Type: Number
@@ -85,24 +85,24 @@ Parameters:
     MinValue: 10
     MaxValue: 90
     Description: >
-      Cible de CPU moyen du service, en pourcentage (F3 : 70 %). Application
-      Auto Scaling ajoute ou retire des taches pour maintenir cette moyenne.
+      Average CPU target for the service, in percent (F3: 70%). Application
+      Auto Scaling adds or removes tasks to maintain this average.
 
   ScaleOutCooldown:
     Type: Number
     Default: 60
     MinValue: 0
     Description: >
-      Delai (s) avant un nouveau scale-out. Court volontairement : mieux vaut
-      reagir vite a une montee de charge.
+      Delay (s) before a new scale-out. Intentionally short: it is better to
+      react quickly to rising load.
 
   ScaleInCooldown:
     Type: Number
     Default: 300
     MinValue: 0
     Description: >
-      Delai (s) avant un nouveau scale-in. Volontairement plus long que le
-      scale-out, pour eviter le battement (flapping) quand la charge oscille.
+      Delay (s) before a new scale-in. Intentionally longer than scale-out to
+      avoid flapping when the load oscillates.
 
   HighCpuAlarmThreshold:
     Type: Number
@@ -110,9 +110,9 @@ Parameters:
     MinValue: 10
     MaxValue: 100
     Description: >
-      Seuil (%) de l'alarme CPU d'observabilite. a garder AU-DESSUS de
-      TargetCpuUtilization : atteindre la cible est normal, la depasser
-      largement et durablement signifie que le scaling ne suit pas.
+      Threshold (%) for the observability CPU alarm. Keep it ABOVE
+      TargetCpuUtilization: reaching the target is normal; exceeding it
+      significantly and for a sustained period means scaling is not keeping up.
 
 # ------------------------------------------------------------------
 # RESSOURCES
@@ -256,27 +256,27 @@ Resources:
 # ------------------------------------------------------------------
 Outputs:
   ScalableTargetId:
-    Description: Identifiant du ScalableTarget (service/<cluster>/<service>)
+    Description: ScalableTarget ID (service/<cluster>/<service>)
     Value: !Ref ServiceScalableTarget
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-scalable-target-id'
 
   ScalingPolicyArn:
-    Description: ARN de la policy de Target Tracking sur le CPU
+    Description: ARN of the Target Tracking CPU scaling policy
     Value: !Ref CpuTargetTrackingPolicy
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-cpu-policy-arn'
 
   CapacityRange:
-    Description: Bornes de scaling appliquees au service (min-max)
+    Description: Scaling limits applied to the service (min-max)
     Value: !Sub '${MinCapacity}-${MaxCapacity}'
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-capacity-range'
 
   HighCpuAlarmName:
-    Description: Nom de l'alarme CloudWatch de CPU soutenu
+    Description: Name of the sustained CPU CloudWatch alarm
     Value: !Ref ServiceHighCpuAlarm
 
   MaxCapacityAlarmName:
-    Description: Nom de l'alarme CloudWatch de capacite maximale atteinte
+    Description: Name of the maximum capacity CloudWatch alarm
     Value: !Ref ServiceMaxCapacityAlarm

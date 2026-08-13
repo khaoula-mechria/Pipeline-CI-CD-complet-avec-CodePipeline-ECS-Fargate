@@ -1,18 +1,18 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Cluster ECS Fargate pour le projet (CI/CD AWS).
-  Extrait de pipeline.yml pour suivre la structure modulaire : ecs-cluster.yaml
-  ne contient QUE le cluster lui-meme (aucune tache/service ici, voir
-  ecs-task-definition.yaml et ecs-service.yaml). Container Insights active
-  pour le monitoring CPU/Memoire/reseau par service (visible dans le
-  dashboard CloudWatch de observability.yml).
+  ECS Fargate cluster for the project (AWS CI/CD).
+  Extracted from pipeline.yml to keep the modular structure: ecs-cluster.yaml
+  contains ONLY the cluster itself (no tasks or services here; see
+  ecs-task-definition.yaml and ecs-service.yaml). Container Insights is enabled
+  for per-service CPU/memory/network monitoring (visible in the CloudWatch
+  dashboard in observability.yml).
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DePLOIEMENT (liste de reference du projet) :
+# NOTE SUR L'ORDRE DE DePLOIEMENT (reference list for the project) :
 #   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
 #   5. codebuild.yaml
-#   6. ecs-cluster.yaml   <- cette stack
+#   6. ecs-cluster.yaml   <- this stack
 #   7. alb.yaml   8. ecs-task-definition.yaml   9. ecs-service.yaml
 #   10. pipeline.yml   11. ecs-autoscaling.yaml   12. observability.yml
 # ------------------------------------------------------------------
@@ -22,23 +22,23 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName des autres stacks.
+    Description: Must match the ProjectName of the other stacks.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre a l'Environment des autres stacks.
+    Description: Must match the Environment of the other stacks.
 
 Resources:
 
   # ==========================================================================
-  # CLUSTER ECS FARGATE
-  # Pas d'instances EC2 a gerer (Fargate = serverless) : le cluster n'est
-  # qu'un regroupement logique de services/taches. ContainerInsights donne
-  # des metriques detaillees par service (CPU/Memoire/reseau/stockage) en
-  # plus des metriques de base AWS/ECS deja utilisees par le dashboard —
-  # active explicitement car desactive par defaut sur un nouveau cluster.
+  # ECS FARGATE CLUSTER
+  # No EC2 instances to manage (Fargate = serverless): the cluster is only a
+  # logical grouping of services and tasks. Container Insights provides detailed
+  # metrics per service (CPU/memory/network/storage) in addition to the base
+  # AWS/ECS metrics already used by the dashboard. It is explicitly enabled
+  # because it is disabled by default on a new cluster.
   # ==========================================================================
   EcsCluster:
     Type: AWS::ECS::Cluster
@@ -56,13 +56,13 @@ Resources:
 Outputs:
 
   EcsClusterName:
-    Description: Nom du cluster ECS (utilise par ecs-service.yaml et pipeline.yaml)
+    Description: Name of the ECS cluster (used by ecs-service.yaml and pipeline.yaml)
     Value: !Ref EcsCluster
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-name'
 
   EcsClusterArn:
-    Description: ARN du cluster ECS
+    Description: ARN of the ECS cluster
     Value: !GetAtt EcsCluster.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-arn'

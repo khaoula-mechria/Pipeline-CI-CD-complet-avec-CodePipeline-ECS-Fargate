@@ -1,14 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Infrastructure reseau (VPC) pour le projet PFE CI/CD AWS.
-  Fournit la fondation sur laquelle s'appuieront les futures stacks :
-  ECS Fargate (dans les subnets prives), ALB (dans les subnets publics),
-  et CodeBuild/CodePipeline (VPC endpoints pour rester hors internet public).
+  Network infrastructure (VPC) for the AWS CI/CD project.
+  Provides the foundation on which future stacks will rely:
+  ECS Fargate (in private subnets), ALB (in public subnets),
+  and CodeBuild/CodePipeline (VPC endpoints to stay off the public internet).
 
-  Architecture : 1 VPC / 2 AZ / 2 subnets publics / 2 subnets prives /
-  1 Internet Gateway / NAT Gateway(s) configurables (single ou HA) /
-  1 VPC Endpoint Gateway S3 (gratuit, reduit le trafic sortant via NAT).
+  Architecture: 1 VPC / 2 AZ / 2 public subnets / 2 private subnets /
+  1 Internet Gateway / configurable NAT Gateway(s) (single or HA) /
+  1 S3 Gateway VPC endpoint (free, reduces outbound traffic via NAT).
 
 # ==============================================================================
 # PARAMeTRES
@@ -19,66 +19,66 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName utilise dans ecr.yaml / codebuild.yaml.
+    Description: Must match the ProjectName used in ecr.yaml / codebuild.yaml.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre a l'Environment utilise dans les autres stacks.
+    Description: Must match the Environment used in the other stacks.
 
   VpcCidr:
     Type: String
     Default: 10.0.0.0/16
     AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
-    Description: Bloc CIDR du VPC. /16 laisse largement la place pour des subnets futurs.
+    Description: VPC CIDR block. /16 leaves plenty of room for future subnets.
 
   PublicSubnet1Cidr:
     Type: String
     Default: 10.0.0.0/24
-    Description: Subnet public — AZ 1 (ALB, NAT Gateway).
+    Description: Public subnet - AZ 1 (ALB, NAT Gateway).
 
   PublicSubnet2Cidr:
     Type: String
     Default: 10.0.1.0/24
-    Description: Subnet public — AZ 2 (ALB, NAT Gateway si strategie HA).
+    Description: Public subnet - AZ 2 (ALB, NAT Gateway in HA strategy).
 
   PrivateSubnet1Cidr:
     Type: String
     Default: 10.0.10.0/24
-    Description: Subnet privE  AZ 1 (taches ECS Fargate).
+    Description: Private subnet - AZ 1 (ECS Fargate tasks).
 
   PrivateSubnet2Cidr:
     Type: String
     Default: 10.0.11.0/24
-    Description: Subnet prive — AZ 2 (taches ECS Fargate).
+    Description: Private subnet - AZ 2 (ECS Fargate tasks).
 
   NatGatewayStrategy:
     Type: String
     Default: single
     AllowedValues: [single, ha]
     Description: >
-      "single"  = 1 seul NAT Gateway partage par les 2 AZ (coût reduit,
-                  adapte a dev/staging — ~32 USD/mois au lieu de ~64).
-      "ha"      = 1 NAT Gateway PAR AZ (haute disponibilite recommandee
-                  en production : une panne d'AZ n'affecte pas la sortie
-                  internet de l'autre AZ).
-      Basculer de "single" a "ha" ne casse rien : seule la route de
-      PrivateRouteTable2 change de cible (voir PrivateRoute2 plus bas).
+      "single" = 1 NAT Gateway shared by both AZs (lower cost,
+      suitable for dev/staging - about $32/month instead of ~$64).
+      "ha" = 1 NAT Gateway per AZ (high availability recommended for
+      production: an AZ failure does not affect outbound internet access in
+      the other AZ).
+      Switching from "single" to "ha" does not break anything: only the route
+      in PrivateRouteTable2 changes target (see PrivateRoute2 below).
 
   EnableFlowLogs:
     Type: String
     Default: 'false'
     AllowedValues: ['true', 'false']
     Description: >
-      Active les VPC Flow Logs vers CloudWatch Logs (traçabilite du trafic
-      reseau, utile en prod / audit securite). Laisse a "false" par defaut
-      pour ne pas generer de coût CloudWatch inutile en dev.
+      Enables VPC Flow Logs to CloudWatch Logs (network traffic traceability,
+      useful in production / security audits). Leave as "false" by default to
+      avoid unnecessary CloudWatch costs in dev.
 
   FlowLogsRetentionDays:
     Type: Number
     Default: 30
-    Description: Duree de retention des Flow Logs si EnableFlowLogs=true.
+    Description: Retention period for Flow Logs if EnableFlowLogs=true.
 
 # ==============================================================================
 # CONDITIONS

@@ -1,16 +1,16 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Roles IAM et connexion GitHub, prerequis avant pipeline.yml et ecs.yaml.
-  - CodePipelineServiceRole : permissions pour orchestrer source/build/deploy.
-  - CodeDeployServiceRole   : permissions pour le deploiement Blue/Green ECS.
-  - EcsTaskExecutionRole    : permissions pour qu'ECS Fargate DeMARRE la tache
-                              (pull image ECR, ecrire les logs, lire les secrets).
-  - EcsTaskRole             : permissions pour le CODE APPLICATIF pendant son
-                              execution (a enrichir selon les besoins de l'app).
-  - GitHubConnection        : pont CodeStar Connections entre GitHub et
-                              CodePipeline (necessite une autorisation manuelle
-                              unique dans la console apres deploiement).
+  IAM roles and GitHub connection, prerequisites before pipeline.yml and ecs.yaml.
+  - CodePipelineServiceRole: permissions to orchestrate source/build/deploy.
+  - CodeDeployServiceRole: permissions for ECS Blue/Green deployment.
+  - EcsTaskExecutionRole: permissions for ECS Fargate to START the task
+    (pull ECR image, write logs, read secrets).
+  - EcsTaskRole: permissions for the APPLICATION CODE while it runs
+    (to be expanded based on app needs).
+  - GitHubConnection: CodeStar Connections bridge between GitHub and
+    CodePipeline (requires a single manual authorization in the AWS console
+    after deployment).
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DePLOIEMENT :
@@ -29,13 +29,13 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName des autres stacks.
+    Description: Must match the ProjectName of the other stacks.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre a l'Environment des autres stacks.
+    Description: Must match the Environment of the other stacks.
 
 Resources:
 
@@ -336,33 +336,33 @@ Outputs:
 
   GitHubConnectionArn:
     Description: >
-      ARN de la connexion GitHub. etat "PENDING" apres deploiement :
-      va dans la console AWS (Developer Tools > Connections) pour
-      l'autoriser manuellement avant de deployer pipeline.yaml.
+      ARN of the GitHub connection. State is "PENDING" after deployment:
+      go to the AWS console (Developer Tools > Connections) to authorize it
+      manually before deploying pipeline.yaml.
     Value: !Ref GitHubConnection
     Export:
       Name: !Sub '${ProjectName}-${Environment}-github-connection-arn'
 
   CodePipelineServiceRoleArn:
-    Description: ARN du rôle utilise par pipeline.yaml
+    Description: ARN of the role used by pipeline.yaml
     Value: !GetAtt CodePipelineServiceRole.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-codepipeline-role-arn'
 
   CodeDeployServiceRoleArn:
-    Description: ARN du rôle utilise par le Deployment Group CodeDeploy dans pipeline.yaml
+    Description: ARN of the role used by the CodeDeploy Deployment Group in pipeline.yaml
     Value: !GetAtt CodeDeployServiceRole.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-codedeploy-role-arn'
 
   EcsTaskExecutionRoleArn:
-    Description: ARN du rôle d'execution utilise par la Task Definition ECS dans ecs.yaml
+    Description: ARN of the execution role used by the ECS Task Definition in ecs.yaml
     Value: !GetAtt EcsTaskExecutionRole.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-execution-role-arn'
 
   EcsTaskRoleArn:
-    Description: ARN du rôle applicatif utilise par la Task Definition ECS dans ecs.yaml
+    Description: ARN of the application role used by the ECS Task Definition in ecs.yaml
     Value: !GetAtt EcsTaskRole.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-task-role-arn'

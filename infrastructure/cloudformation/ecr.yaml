@@ -11,10 +11,10 @@ AWSTemplateFormatVersion: '2010-09-09'
 # ------------------------------------------------------------------
 
 Description: >-
-  Registre Amazon ECR prive (CI/CD AWS) - stocke les images Docker construites
-  par CodeBuild. Scan on push active, chiffrement AES256, tags immuables.
-  Lifecycle Policy : expire les images untagged puis ne conserve que les N
-  dernieres images.
+  Amazon ECR private registry (AWS CI/CD) - stores Docker images built by
+  CodeBuild. Scan on push is enabled, AES256 encryption is used, and tags are
+  immutable. Lifecycle Policy: expires untagged images and keeps only the last
+  N images.
 
 # ------------------------------------------------------------------
 # INTERFACE CONSOLE
@@ -36,13 +36,13 @@ Metadata:
           - UntaggedRetentionDays
     ParameterLabels:
       ProjectName:
-        default: Nom du projet (minuscules)
+        default: Project name (lowercase)
       Environment:
-        default: Environnement cible
+        default: Target environment
       MaxImageCount:
-        default: Nombre d'images a conserver
+        default: Number of images to keep
       UntaggedRetentionDays:
-        default: Retention des images untagged (jours)
+        default: Untagged image retention (days)
 
 # ------------------------------------------------------------------
 # PARAMETRES
@@ -54,15 +54,15 @@ Parameters:
     Type: String
     Default: taskmanager
     Description: >-
-      Nom du projet, utilise comme prefixe de nommage des ressources.
-      Doit etre en minuscules (contrainte ECR).
-    # Le motif interdit le tiret final et impose de commencer par une lettre.
+      Project name, used as a resource naming prefix.
+      Must be lowercase (ECR constraint).
+    # The pattern forbids a trailing hyphen and requires the name to start with a letter.
     AllowedPattern: '^[a-z]([a-z0-9-]*[a-z0-9])?$'
     MinLength: 2
     MaxLength: 30
     ConstraintDescription: >-
-      2 a 30 caracteres, minuscules / chiffres / tirets, doit commencer par
-      une lettre et ne pas terminer par un tiret.
+      2 to 30 characters, lowercase / numbers / hyphens, must start with a
+      letter and not end with a hyphen.
 
   Environment:
     Type: String
@@ -71,7 +71,7 @@ Parameters:
       - dev
       - staging
       - prod
-    Description: Environnement cible. Impacte le nom du repository.
+    Description: Target environment. Affects the repository name.
 
   MaxImageCount:
     Type: Number
@@ -79,8 +79,8 @@ Parameters:
     MinValue: 1
     MaxValue: 100
     Description: >-
-      Nombre maximum d'images conservees par la Lifecycle Policy.
-      Au-dela, les images les plus anciennes sont supprimees automatiquement.
+      Maximum number of images kept by the Lifecycle Policy.
+      Past this limit, the oldest images are deleted automatically.
 
   UntaggedRetentionDays:
     Type: Number
@@ -88,8 +88,8 @@ Parameters:
     MinValue: 1
     MaxValue: 30
     Description: >-
-      Duree de conservation des images sans tag (layers laisses par des
-      builds echoues ou interrompus) avant expiration automatique.
+      Retention period for untagged images (layers left by failed or interrupted
+      builds) before automatic expiration.
 
 # ------------------------------------------------------------------
 # RESSOURCES
@@ -251,19 +251,19 @@ Resources:
 # ------------------------------------------------------------------
 Outputs:
   RepositoryUri:
-    Description: URI complet du repository (a utiliser pour "docker push")
+    Description: Full repository URI (to use for "docker push")
     Value: !GetAtt AppRepository.RepositoryUri
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecr-uri'
 
   RepositoryArn:
-    Description: ARN du repository (pour restreindre les IAM policies CodeBuild/ECS)
+    Description: Repository ARN (used to restrict CodeBuild/ECS IAM policies)
     Value: !GetAtt AppRepository.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecr-arn'
 
   RepositoryName:
-    Description: Nom du repository ECR
+    Description: Name of the ECR repository
     Value: !Ref AppRepository
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecr-name'

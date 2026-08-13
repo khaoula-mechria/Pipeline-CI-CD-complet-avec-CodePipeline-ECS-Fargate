@@ -1,14 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Application Load Balancer public + 2 Target Groups (Blue/Green) + listeners
-  pour le projet (CI/CD AWS). Extrait de pipeline.yml pour suivre la structure
-  modulaire.
-  - 2 target groups (Blue/Green) : requis par CodeDeploy pour le traffic
-    shift Blue/Green (voir pipeline.yaml, CodeDeployDeploymentGroup).
-  - Listener prod (80) + listener de test (8080, CodeDeploy uniquement).
-  - HTTPS non active pour l'instant (pas de domaine/certificat ACM en dev),
-    mais l'architecture est prête : voir HttpsListener (Condition) plus bas.
+  Public Application Load Balancer + 2 target groups (Blue/Green) + listeners
+  for the project (AWS CI/CD). Extracted from pipeline.yml to keep the modular
+  structure.
+  - 2 target groups (Blue/Green): required by CodeDeploy for Blue/Green traffic
+    shift (see pipeline.yaml, CodeDeployDeploymentGroup).
+  - Production listener (80) + test listener (8080, CodeDeploy only).
+  - HTTPS is not active yet (no domain/ACM certificate in dev), but the
+    architecture is ready: see HttpsListener (Condition) below.
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DePLOIEMENT (voir ecs-cluster.yaml) :
@@ -20,45 +20,45 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName des autres stacks.
+    Description: Must match the ProjectName of the other stacks.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre a l'Environment des autres stacks.
+    Description: Must match the Environment of the other stacks.
 
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: >
-      ID du VPC (importe par convention depuis vpc.yaml dans les autres
-      stacks ; expose ici comme parametre explicite pour respecter la regle
-      "pas d'ID en dur"). Valeur attendue : sortie VpcId de vpc.yaml.
+      VPC ID (imported by convention from vpc.yaml in the other stacks;
+      exposed here as an explicit parameter to respect the rule
+      "no hardcoded ID"). Expected value: VpcId output from vpc.yaml.
 
   PublicSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: >
-      Subnets publics (2 AZ minimum) où placer l'ALB. Valeur attendue :
-      sortie PublicSubnetIds de vpc.yaml.
+      Public subnets (minimum 2 AZs) where the ALB is placed. Expected value:
+      PublicSubnetIds output from vpc.yaml.
 
   ContainerPort:
     Type: Number
     Default: 3000
-    Description: Port expose par le conteneur applicatif (cible des target groups).
+    Description: Port exposed by the application container (target of the target groups).
 
   HealthCheckPath:
     Type: String
     Default: /health
-    Description: Chemin HTTP utilise par les health checks des target groups.
+    Description: HTTP path used by the target group health checks.
 
   CertificateArn:
     Type: String
     Default: ''
     Description: >
-      ARN d'un certificat ACM (optionnel). Laisser vide en dev/staging.
-      Des qu'un domaine est disponible, renseigner cet ARN pour activer
-      HttpsListener (voir Condition HasCertificate ci-dessous) sans avoir
-      a modifier la structure du template.
+      ARN of an ACM certificate (optional). Leave empty in dev/staging.
+      As soon as a domain is available, set this ARN to activate
+      HttpsListener (see the HasCertificate condition below) without changing
+      the template structure.
 
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
@@ -67,10 +67,9 @@ Resources:
 
   # ==========================================================================
   # SECURITY GROUP DE L'ALB
-  # Ouvert au public sur 80 (prod) et 8080 (listener de test CodeDeploy,
-  # utilise UNIQUEMENT pendant la validation Blue/Green — jamais expose a de
-  # vrais utilisateurs). Port 443 ajoute conditionnellement des qu'un
-  # certificat est fourni.
+  # Open to the public on 80 (prod) and 8080 (CodeDeploy test listener,
+  # used ONLY during Blue/Green validation and never exposed to real users).
+  # Port 443 is added conditionally when a certificate is provided.
   # ==========================================================================
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -97,9 +96,9 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Regle 443 separee (et non inline ci-dessus) car SecurityGroupIngress ne
-  # supporte pas de bloc conditionnel par entree — seule une ressource
-  # entiere peut être conditionnee avec Condition.
+  # Rule 443 is separate (not inline above) because SecurityGroupIngress does
+  # not support a conditional block per entry. Only an entire resource can be
+  # conditioned with Condition.
   AlbHttpsIngress:
     Type: AWS::EC2::SecurityGroupIngress
     Condition: HasCertificate
@@ -109,7 +108,7 @@ Resources:
       FromPort: 443
       ToPort: 443
       CidrIp: 0.0.0.0/0
-      Description: Trafic HTTPS (actif uniquement si CertificateArn est fourni)
+      Description: HTTPS traffic
 
   # ==========================================================================
   # APPLICATION LOAD BALANCER
@@ -131,9 +130,9 @@ Resources:
 
   # ==========================================================================
   # TARGET GROUPS BLUE/GREEN
-  # TargetType "ip" obligatoire pour Fargate (pas d'instance EC2 a cibler).
-  # Les deux groups existent en permanence : CodeDeploy bascule le trafic
-  # prod de l'un vers l'autre a chaque deploiement (voir pipeline.yaml).
+  # TargetType "ip" is required for Fargate (no EC2 instance to target).
+  # Both groups exist permanently: CodeDeploy switches production traffic from
+  # one to the other on every deployment (see pipeline.yaml).
   # ==========================================================================
   BlueTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -150,8 +149,8 @@ Resources:
       Matcher:
         HttpCode: '200'
       TargetGroupAttributes:
-        # Cycle Blue/Green plus rapide : pas besoin de garder les connexions
-        # ouvertes 5 min (defaut) sur un environnement dev/staging.
+        # Faster Blue/Green rotation: no need to keep connections open for 5 min
+        # (default) in a dev/staging environment.
         - Key: deregistration_delay.timeout_seconds
           Value: '30'
       Tags:
@@ -185,9 +184,9 @@ Resources:
 
   # ==========================================================================
   # LISTENERS
-  # ProdListener (80) route par defaut vers Blue ; TestListener (8080) route
-  # vers Green — CodeDeploy reecrit ces DefaultActions a chaque deploiement
-  # pour effectuer le traffic shift (comportement natif Blue/Green ECS).
+  # ProdListener (80) routes by default to Blue; TestListener (8080) routes to
+  # Green. CodeDeploy rewrites these DefaultActions on every deployment to
+  # perform the traffic shift (native ECS Blue/Green behavior).
   # ==========================================================================
   ProdListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -210,10 +209,10 @@ Resources:
           TargetGroupArn: !Ref GreenTargetGroup
 
   # ==========================================================================
-  # LISTENER HTTPS (prepare pour plus tard)
-  # Cree uniquement si CertificateArn est fourni. Redirige vers Blue par
-  # defaut, comme ProdListener. Pour activer : redeployer cette stack avec
-  # le parametre CertificateArn renseigne, aucune autre modification requise.
+  # HTTPS LISTENER (preparation for later)
+  # Created only if CertificateArn is provided. Redirects to Blue by default,
+  # like ProdListener. To enable it: redeploy this stack with the
+  # CertificateArn parameter set; no other changes are required.
   # ==========================================================================
   HttpsListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -231,72 +230,72 @@ Resources:
 Outputs:
 
   LoadBalancerDnsName:
-    Description: DNS de l'ALB (point d'entree public de l'application)
+    Description: ALB DNS name (public entry point for the application)
     Value: !GetAtt ApplicationLoadBalancer.DNSName
     Export:
       Name: !Sub '${ProjectName}-${Environment}-alb-dns'
 
   AlbFullName:
     Description: >
-      Nom "full name" de l'ALB (format 'app/nom/id-genere-par-AWS') — requis
-      comme dimension CloudWatch (namespace AWS/ApplicationELB) par la stack
-      d'observabilite.
+      Full name of the ALB (format 'app/name/id-generated-by-AWS') - required as
+      a CloudWatch dimension (namespace AWS/ApplicationELB) by the observability
+      stack.
     Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
     Export:
       Name: !Sub '${ProjectName}-${Environment}-alb-full-name'
 
   AlbSecurityGroupId:
-    Description: ID du security group de l'ALB (source autorisee dans ecs-service.yaml)
+    Description: ALB security group ID (authorized source in ecs-service.yaml)
     Value: !GetAtt AlbSecurityGroup.GroupId
     Export:
       Name: !Sub '${ProjectName}-${Environment}-alb-sg-id'
 
   BlueTargetGroupArn:
-    Description: ARN du target group Blue (utilise par ecs-service.yaml pour le LoadBalancer initial)
+    Description: ARN of the Blue target group (used by ecs-service.yaml for the initial load balancer)
     Value: !Ref BlueTargetGroup
     Export:
       Name: !Sub '${ProjectName}-${Environment}-tg-blue-arn'
 
   GreenTargetGroupArn:
-    Description: ARN du target group Green
+    Description: ARN of the Green target group
     Value: !Ref GreenTargetGroup
     Export:
       Name: !Sub '${ProjectName}-${Environment}-tg-green-arn'
 
   BlueTargetGroupName:
-    Description: Nom du target group Blue (requis par CodeDeploy LoadBalancerInfo)
+    Description: Name of the Blue target group (required by CodeDeploy LoadBalancerInfo)
     Value: !GetAtt BlueTargetGroup.TargetGroupName
     Export:
       Name: !Sub '${ProjectName}-${Environment}-tg-blue-name'
 
   GreenTargetGroupName:
-    Description: Nom du target group Green (requis par CodeDeploy LoadBalancerInfo)
+    Description: Name of the Green target group (required by CodeDeploy LoadBalancerInfo)
     Value: !GetAtt GreenTargetGroup.TargetGroupName
     Export:
       Name: !Sub '${ProjectName}-${Environment}-tg-green-name'
 
   BlueTargetGroupFullName:
     Description: >
-      Nom "full name" du target group Blue — requis pour la dimension
-      TargetGroup des metriques CloudWatch (HealthyHostCount).
+      Full name of the Blue target group - required for the CloudWatch metric
+      dimension TargetGroup (HealthyHostCount).
     Value: !GetAtt BlueTargetGroup.TargetGroupFullName
     Export:
       Name: !Sub '${ProjectName}-${Environment}-tg-blue-full-name'
 
   GreenTargetGroupFullName:
-    Description: Nom "full name" du target group Green
+    Description: Full name of the Green target group
     Value: !GetAtt GreenTargetGroup.TargetGroupFullName
     Export:
       Name: !Sub '${ProjectName}-${Environment}-tg-green-full-name'
 
   ProdListenerArn:
-    Description: ARN du listener prod (80) — requis par CodeDeploy LoadBalancerInfo.ProdTrafficRoute
+    Description: ARN of the production listener (80) - required by CodeDeploy LoadBalancerInfo.ProdTrafficRoute
     Value: !Ref ProdListener
     Export:
       Name: !Sub '${ProjectName}-${Environment}-prod-listener-arn'
 
   TestListenerArn:
-    Description: ARN du listener de test (8080) — requis par CodeDeploy LoadBalancerInfo.TestTrafficRoute
+    Description: ARN of the test listener (8080) - required by CodeDeploy LoadBalancerInfo.TestTrafficRoute
     Value: !Ref TestListener
     Export:
       Name: !Sub '${ProjectName}-${Environment}-test-listener-arn'

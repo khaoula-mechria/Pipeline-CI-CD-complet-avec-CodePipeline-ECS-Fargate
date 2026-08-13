@@ -1,24 +1,24 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Service ECS Fargate pour le projet (CI/CD AWS). Extrait de pipeline.yml
-  pour suivre la structure modulaire.
-  - LaunchType FARGATE, DesiredCount configurable par parametre.
-  - Reseau dans les subnets prives du VPC (pas d'IP publique — sortie via
-    NAT Gateway, voir vpc.yaml).
-  - Accepte le trafic UNIQUEMENT depuis l'ALB (security group dedie).
-  - DeploymentController CODE_DEPLOY : c'est CodeDeploy (pipeline.yaml), pas
-    ECS lui-meme, qui pilote le traffic shift Blue/Green a chaque
-    deploiement - ECS ne fait que demarrer/arrêter les taches.
+  ECS Fargate service for the project (AWS CI/CD). Extracted from pipeline.yml to
+  keep the modular structure.
+  - LaunchType FARGATE, DesiredCount configurable by parameter.
+  - Network in the private subnets of the VPC (no public IP - outgoing traffic via
+    NAT Gateway, see vpc.yaml).
+  - Accepts traffic ONLY from the ALB (dedicated security group).
+  - DeploymentController CODE_DEPLOY: it is CodeDeploy (pipeline.yaml), not ECS
+    itself, that controls the Blue/Green traffic shift at each deployment. ECS
+    only starts and stops tasks.
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DePLOIEMENT (voir ecs-cluster.yaml) :
-#   ... 8. ecs-task-definition.yaml   9. ecs-service.yaml   <- cette stack
+# NOTE SUR L'ORDRE DE DePLOIEMENT (see ecs-cluster.yaml) :
+#   ... 8. ecs-task-definition.yaml   9. ecs-service.yaml   <- this stack
 #   10. pipeline.yml   11. ecs-autoscaling.yaml   12. observability.yml
 #
-# L'auto scaling du nombre de taches est declare a part, dans
-# ecs-autoscaling.yaml (deployee apres pipeline.yml car ses alarmes notifient
-# le topic SNS cree la-bas) — voir la note sur DesiredCount ci-dessous.
+# Auto scaling of the number of tasks is defined separately in
+# ecs-autoscaling.yaml (deployed after pipeline.yml because its alarms notify the
+# SNS topic created there) - see the DesiredCount note below.
 # ------------------------------------------------------------------
 
 Parameters:
@@ -26,52 +26,51 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName des autres stacks.
+    Description: Must match the ProjectName of the other stacks.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre a l'Environment des autres stacks.
+    Description: Must match the Environment of the other stacks.
 
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: >
-      ID du VPC. Valeur attendue : sortie VpcId de vpc.yaml. Utilise pour
-      creer le security group du service dans le bon VPC.
+      VPC ID. Expected value: VpcId output from vpc.yaml. Used to create the
+      service security group in the correct VPC.
 
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: >
-      Subnets prives (2 AZ minimum) où placer les taches Fargate.
-      Valeur attendue : sortie PrivateSubnetIds de vpc.yaml.
+      Private subnets (minimum 2 AZs) where the Fargate tasks are placed.
+      Expected value: PrivateSubnetIds output from vpc.yaml.
 
   ContainerPort:
     Type: Number
     Default: 3000
-    Description: Port expose par le conteneur. Doit correspondre a alb.yaml et ecs-task-definition.yaml.
+    Description: Port exposed by the container. Must match alb.yaml and ecs-task-definition.yaml.
 
   DesiredCount:
     Type: Number
     Default: 2
     MinValue: 1
     Description: >
-      Nombre de taches Fargate au DeMARRAGE (haute dispo sur 2 AZ).
-      ATTENTION : depuis l'ajout de ecs-autoscaling.yaml, ce n'est plus la
-      valeur qui fait autorite — c'est Application Auto Scaling qui possede
-      DesiredCount une fois son ScalableTarget attache. Une mise a jour de
-      CETTE stack peut le remettre transitoirement a cette valeur ;
-      Application Auto Scaling le corrigera a sa prochaine evaluation (au
-      minimum MinCapacity, puis selon le CPU reel). Pour changer durablement
-      le nombre de taches, ajuster MinCapacity/MaxCapacity dans
-      ecs-autoscaling.yaml, pas ce parametre.
+      Number of Fargate tasks at startup (high availability across 2 AZs).
+      WARNING: since the addition of ecs-autoscaling.yaml, this is no longer the
+      value that matters. Application Auto Scaling owns DesiredCount after its
+      ScalableTarget is attached. Updating THIS stack may temporarily set it back
+      to this value; Application Auto Scaling will correct it on the next
+      evaluation (at least MinCapacity, then based on actual CPU). To change the
+      number of tasks durably, adjust MinCapacity/MaxCapacity in
+      ecs-autoscaling.yaml, not this parameter.
 
 Resources:
 
   # ==========================================================================
-  # SECURITY GROUP DU SERVICE ECS
-  # N'accepte du trafic entrant QUE depuis le security group de l'ALB
-  # (importe de alb.yaml) — jamais directement depuis internet.
+  # ECS SERVICE SECURITY GROUP
+  # Accepts inbound traffic ONLY from the ALB security group (imported from
+  # alb.yaml) and never directly from the internet.
   # ==========================================================================
   EcsServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -84,7 +83,7 @@ Resources:
           ToPort: !Ref ContainerPort
           SourceSecurityGroupId: !ImportValue
             'Fn::Sub': '${ProjectName}-${Environment}-alb-sg-id'
-          Description: Trafic autorise UNIQUEMENT depuis l'ALB (Blue et Green)
+          Description: ALB to ECS traffic
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
@@ -95,10 +94,10 @@ Resources:
           Value: !Ref Environment
 
   # ==========================================================================
-  # SERVICE ECS FARGATE
-  # LoadBalancers pointe vers le target group Blue au demarrage : c'est la
-  # cible "initiale" attendue par CodeDeploy avant son premier deploiement
-  # Blue/Green (voir pipeline.yaml, CodeDeployDeploymentGroup).
+  # ECS FARGATE SERVICE
+  # LoadBalancers points to the Blue target group at startup: this is the
+  # "initial" target expected by CodeDeploy before its first Blue/Green
+  # deployment (see pipeline.yaml, CodeDeployDeploymentGroup).
   # ==========================================================================
   EcsService:
     Type: AWS::ECS::Service
@@ -133,19 +132,19 @@ Resources:
 Outputs:
 
   EcsServiceName:
-    Description: Nom du service ECS Fargate (utilise par pipeline.yaml / observability.yaml)
+    Description: Name of the ECS Fargate service (used by pipeline.yaml / observability.yaml)
     Value: !GetAtt EcsService.Name
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-service-name'
 
   EcsServiceArn:
-    Description: ARN du service ECS Fargate
+    Description: ARN of the ECS Fargate service
     Value: !Ref EcsService
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-service-arn'
 
   EcsServiceSecurityGroupId:
-    Description: ID du security group du service ECS
+    Description: ID of the ECS service security group
     Value: !GetAtt EcsServiceSecurityGroup.GroupId
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecs-service-sg-id'

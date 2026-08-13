@@ -1,14 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Observabilite du pipeline (EPIC CICD-EP-04 du cahier des charges) :
-  - Lambda qui publie 3 metriques custom (PipelineDuration, PipelineSuccess,
-    PipelineFailure) a chaque fin d'execution du pipeline, declenchee par
-    une regle EventBridge dediee (CodePipeline ne publie pas nativement de
-    metrique de duree/succes en CloudWatch).
-  - Dashboard CloudWatch : metriques pipeline (custom), CodeBuild, ECS et ALB.
-  - 2 alarmes CloudWatch (duree > seuil, echec de pipeline) notifiant le
-    topic SNS deja cree dans pipeline.yml.
+  Pipeline observability (EPIC CICD-EP-04 of the requirements):
+  - Lambda that publishes 3 custom metrics (PipelineDuration, PipelineSuccess,
+    PipelineFailure) at the end of each pipeline execution, triggered by a
+    dedicated EventBridge rule (CodePipeline does not natively publish duration
+    or success metrics to CloudWatch).
+  - CloudWatch dashboard: pipeline metrics (custom), CodeBuild, ECS, and ALB.
+  - 2 CloudWatch alarms (duration above threshold, pipeline failure) notifying
+    the SNS topic already created in pipeline.yml.
 
 # ------------------------------------------------------------------
 # NOTE SUR L'ORDRE DE DePLOIEMENT (voir ecs-cluster.yaml pour la liste
@@ -23,29 +23,29 @@ Parameters:
     Type: String
     Default: taskmanager
     AllowedPattern: '^[a-z][a-z0-9-]*$'
-    Description: Doit correspondre au ProjectName des autres stacks.
+    Description: Must match the ProjectName of the other stacks.
 
   Environment:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-    Description: Doit correspondre a l'Environment des autres stacks.
+    Description: Must match the Environment of the other stacks.
 
   PipelineDurationThresholdSeconds:
     Type: Number
     Default: 900
     Description: >
-      Seuil d'alarme sur la duree du pipeline, en secondes (F4 du cahier
-      des charges : "alarme si la duree depasse 15 minutes" -> 900s).
+      Alarm threshold for the pipeline duration, in seconds (F4 of the
+      requirements: "alarm if the duration exceeds 15 minutes" -> 900s).
 
   AlarmEmail:
     Type: String
     Default: ''
     Description: >
-      Adresse email optionnelle a notifier (US-04 : "je reçois un email
-      d'alerte"). Laisser vide pour ne creer aucun abonnement — le topic
-      SNS existe deja (pipeline.yaml) et peut être abonne manuellement
-      (email, Slack via chatbot...) apres coup sans redeployer cette stack.
+      Optional email address to notify (US-04: "I receive an alert email").
+      Leave empty to create no subscription - the SNS topic already exists
+      (pipeline.yaml) and can be subscribed manually later (email, Slack via
+      chatbot, etc.) without redeploying this stack.
 
 Conditions:
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
@@ -414,13 +414,13 @@ Resources:
 Outputs:
 
   DashboardName:
-    Description: Nom du dashboard CloudWatch
+    Description: Name of the CloudWatch dashboard
     Value: !Sub '${ProjectName}-${Environment}-dashboard'
 
   MetricsNamespace:
-    Description: Namespace CloudWatch des metriques custom du pipeline
+    Description: CloudWatch namespace for the custom pipeline metrics
     Value: !Sub '${ProjectName}/${Environment}/Pipeline'
 
   MetricsPublisherFunctionArn:
-    Description: ARN de la fonction Lambda de publication des metriques
+    Description: ARN of the Lambda function publishing the metrics
     Value: !GetAtt MetricsPublisherFunction.Arn
