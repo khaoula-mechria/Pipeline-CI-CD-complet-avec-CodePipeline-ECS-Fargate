@@ -1,3 +1,40 @@
+# Local development tools
+.devbox/
+.git/
+.github/
+.vscode/
+
+# Node dependencies
+node_modules/
+**/node_modules/
+
+# Test artifacts
+coverage/
+**/coverage/
+reports/
+**/reports/
+
+# Generated reports
+coverage-html.tar.gz
+**/coverage-html.tar.gz
+semgrep-report.json
+**/semgrep-report.json
+ecr-scan-findings.json
+**/ecr-scan-findings.json
+scan-wait.err
+**/scan-wait.err
+
+# Generated deployment files
+taskdef.json
+**/taskdef.json
+taskdef.rendered.json
+**/taskdef.rendered.json
+imageDetail.json
+**/imageDetail.json
+
+# Environment / local configuration
+.env
+.env.*
 # Ignore all node_modules directories
 node_modules/
 **/node_modules/
