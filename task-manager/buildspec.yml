@@ -51,11 +51,11 @@ phases:
       - semgrep --config auto --error --json --output semgrep-report.json . || SAST_STATUS=$?
       - |
         if [ "${SAST_STATUS:-0}" -ne 0 ]; then
-          echo "❌ Vulnerabilites critiques detectees par Semgrep -> arrêt du build"
+          echo "ERROR Vulnerabilites critiques detectees par Semgrep -> arrêt du build"
           cat semgrep-report.json
           exit 1
         fi
-      - echo "✅ SAST OK, aucune vulnerabilite critique"
+      - echo " SAST OK, aucune vulnerabilite critique"
       - echo "Connexion a Amazon ECR"
       - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$ECR_REPOSITORY_URI"
       # Tag = 8 premiers caractères du SHA du commit (traçabilite build <-> commit)
@@ -92,7 +92,7 @@ phases:
         COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
         echo "Couverture mesuree : ${COVERAGE}%"
         if (( $(echo "$COVERAGE < $COVERAGE_THRESHOLD" | bc -l) )); then
-          echo "❌ Couverture insuffisante (< ${COVERAGE_THRESHOLD}%) -> echec du pipeline"
+          echo " Couverture insuffisante (< ${COVERAGE_THRESHOLD}%) -> echec du pipeline"
           exit 1
         fi
       # Le rapport HTML est une arborescence de fichiers ; les artefacts de ce
@@ -102,10 +102,10 @@ phases:
       - echo "Archivage du rapport HTML de couverture"
       - tar -czf coverage-html.tar.gz -C coverage lcov-report
       - ls -la coverage/cobertura-coverage.xml coverage-html.tar.gz
-      - echo "✅ Tests et couverture OK -> push de l'image vers ECR"
+      - echo " Tests et couverture OK -> push de l'image vers ECR"
       - docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"
       - docker push "$ECR_REPOSITORY_URI:latest"
-      - echo "✅ Image poussee avec succès -> $ECR_REPOSITORY_URI:$IMAGE_TAG"
+      - echo " Image poussee avec succès -> $ECR_REPOSITORY_URI:$IMAGE_TAG"
       # ======================================================================
       # SCAN ECR (US-05) — exploite le scan declenche automatiquement par
       # ScanOnPush (active sur le repository dans ecr.yaml).
@@ -127,7 +127,7 @@ phases:
         if ! aws ecr wait image-scan-complete \
               --repository-name "$ECR_REPO_NAME" \
               --image-id "imageTag=$IMAGE_TAG" 2>scan-wait.err; then
-          echo "❌ Le scan ECR ne s'est pas termine correctement :"
+          echo " Le scan ECR ne s'est pas termine correctement :"
           cat scan-wait.err
           aws ecr describe-image-scan-findings \
             --repository-name "$ECR_REPO_NAME" \
@@ -159,7 +159,7 @@ phases:
           "$CRITICAL" "$HIGH" "$MEDIUM" "$LOW" "$CODEBUILD_BUILD_ID")
 
         if [ "$CRITICAL" -gt 0 ]; then
-          echo "❌ $CRITICAL vulnerabilite(s) CRITICAL -> deploiement bloque (US-05)"
+          echo " $CRITICAL vulnerabilite(s) CRITICAL -> deploiement bloque (US-05)"
           # Notification best-effort : le pipeline notifie deja l'echec via
           # EventBridge, mais sans dire POURQUOI. On envoie donc le detail, et
           # un echec de publication ne doit pas masquer l'echec du build.
@@ -167,19 +167,19 @@ phases:
             --topic-arn "$PIPELINE_NOTIFICATIONS_TOPIC_ARN" \
             --subject "[$PROJECT_NAME-$ENVIRONMENT_NAME] Scan ECR: $CRITICAL CRITICAL - deploiement bloque" \
             --message "$SCAN_MSG" \
-            || echo "⚠️ Publication SNS impossible — le build echoue quand même."
+            || echo " Publication SNS impossible — le build echoue quand même."
           exit 1
         fi
 
         if [ "$HIGH" -gt 0 ]; then
-          echo "⚠️ $HIGH vulnerabilite(s) HIGH -> notification SNS, sans blocage (US-05)"
+          echo " $HIGH vulnerabilite(s) HIGH -> notification SNS, sans blocage (US-05)"
           aws sns publish \
             --topic-arn "$PIPELINE_NOTIFICATIONS_TOPIC_ARN" \
             --subject "[$PROJECT_NAME-$ENVIRONMENT_NAME] Scan ECR: $HIGH HIGH (non bloquant)" \
             --message "$SCAN_MSG" \
-            || echo "⚠️ Publication SNS impossible — le build continue (HIGH non bloquant)."
+            || echo " Publication SNS impossible — le build continue (HIGH non bloquant)."
         else
-          echo "✅ Aucune vulnerabilite CRITICAL ni HIGH"
+          echo " Aucune vulnerabilite CRITICAL ni HIGH"
         fi
       - echo "Generation de imageDetail.json (format attendu par l'action"
       - echo "CodePipeline CodeDeployToECS — PAS le même format que"
@@ -197,7 +197,7 @@ phases:
       - |
         for VAR in DB_SECRET_ARN API_KEY_SECRET_ARN; do
           if [ -z "$(eval echo \"\$$VAR\")" ]; then
-            echo "❌ $VAR est vide : la stack secrets-manager.yaml est-elle deployee ?"
+            echo " $VAR est vide : la stack secrets-manager.yaml est-elle deployee ?"
             exit 1
           fi
         done
