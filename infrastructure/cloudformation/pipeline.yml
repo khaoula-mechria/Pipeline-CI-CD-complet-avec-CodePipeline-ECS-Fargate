@@ -230,7 +230,7 @@ Resources:
       DeploymentGroupName: !Sub '${ProjectName}-${Environment}-dg'
       ServiceRoleArn: !ImportValue
         'Fn::Sub': '${ProjectName}-${Environment}-codedeploy-role-arn'
-      DeploymentConfigName: CodeDeployDefault.ECSLinear10PercentEvery1Minute
+      DeploymentConfigName: CodeDeployDefault.ECSLinear10PercentEvery1Minutes
       DeploymentStyle:
         DeploymentType: BLUE_GREEN
         DeploymentOption: WITH_TRAFFIC_CONTROL
