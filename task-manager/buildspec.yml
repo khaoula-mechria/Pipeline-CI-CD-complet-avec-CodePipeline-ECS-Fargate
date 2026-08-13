@@ -1,7 +1,7 @@
 version: 0.2
 
 # ==============================================================================
-# buildspec.yml — Pipeline de build de l'application task-manager (Node.js).
+# buildspec.yml - Pipeline de build de l'application task-manager (Node.js).
 #
 # Ordre des phases (coherent avec l'architecture documentee du pipeline) :
 #   install    -> dependances npm + outil SAST
@@ -13,7 +13,7 @@ version: 0.2
 # PROJECT_NAME / ENVIRONMENT_NAME sont injectees automatiquement par le projet
 # CodeBuild (voir codebuild.yaml).
 #
-# IMPORTANT — repertoire de travail : CodeBuild execute TOUTES les commandes
+# IMPORTANT - repertoire de travail : CodeBuild execute TOUTES les commandes
 # depuis la racine du depôt clone ($CODEBUILD_SRC_DIR), quel que soit l'endroit
 # où se trouve ce fichier. Comme l'application vit dans task-manager/, chaque
 # phase commence par un `cd` explicite vers $APP_DIR. Les chemins des sections
