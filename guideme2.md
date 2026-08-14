@@ -13,18 +13,20 @@ In PowerShell, from the **project root**:
 ```powershell
 cd "C:\Users\user\Desktop\Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate"
 
-$env:AWS_PROFILE="taskmanager"
+$env:AWS_PROFILE="AdministratorAccess-136609826386"
 $env:AWS_DEFAULT_REGION="eu-west-2"
 
-aws sso login --profile taskmanager
+aws sso login --profile AdministratorAccess-136609826386
 ```
 
 Then:
 
 ```powershell
-aws sts get-caller-identity --profile taskmanager
-aws configure get region --profile taskmanager
+aws sts get-caller-identity --profile AdministratorAccess-136609826386
+aws configure get region --profile AdministratorAccess-136609826386
 ```
+
+**Note:** `aws configure list-profiles` also shows a `default` profile — its credentials are stale/invalid. Always pass `AdministratorAccess-136609826386` explicitly (via `$env:AWS_PROFILE` or `--profile`); don't rely on whatever profile is currently the CLI's implicit default.
 
 ### You should see
 
@@ -216,6 +218,14 @@ aws ecr describe-repositories `
   --output table
 ```
 
+Also check the account's **registry-wide** scanning mode — the per-repo `ScanOnPush` above doesn't tell you this, and it changes how the scan gate behaves (see step 14's troubleshooting):
+
+```powershell
+aws inspector2 batch-get-account-status --region eu-west-2
+```
+
+If `resourceState.ecr.status` is `ENABLED`, the registry uses **Enhanced Scanning (Amazon Inspector v2)**, not Basic Scanning — that's the case for this account.
+
 ### Important
 
 The CDC requires:
@@ -225,7 +235,7 @@ The CDC requires:
 * pushed to ECR;
 * scanned for vulnerabilities.
 
-The repository is `IMMUTABLE` (tags can't be overwritten once pushed). `buildspec.yml` only pushes the commit-SHA tag on every automated build now — an earlier version also pushed `latest` every time, which ECR would have rejected from the second build onward for that exact reason. That's fixed, but it has one consequence: **something still has to push a `:latest` image once, manually, before the Task Definition/ECS Service stacks (steps 11-12)** — `ecs-task-definition.yaml`'s bootstrap `ContainerImage` parameter defaults to `<repo>:latest` for that very first task, before the pipeline has ever run and produced a real, SHA-tagged revision. Step 6 below does exactly that, once, safely (nothing else will ever try to overwrite that tag again).
+The repository is **`MUTABLE`** (switched back from `IMMUTABLE` on 2026-08-14 — see step 14's troubleshooting for why: `IMMUTABLE` made every automated build fail at `docker push`, a known unfixed BuildKit/ECR interaction, not something specific to this project). `buildspec.yml` still only pushes the commit-SHA tag on every automated build, never `latest` — that's just not useful, not a mutability workaround. One consequence either way: **something still has to push a `:latest` image once, manually, before the Task Definition/ECS Service stacks (steps 11-12)** — `ecs-task-definition.yaml`'s bootstrap `ContainerImage` parameter defaults to `<repo>:latest` for that very first task, before the pipeline has ever run and produced a real, SHA-tagged revision. Step 6 below does exactly that, once.
 
 ---
 
@@ -272,7 +282,7 @@ docker push "${ecrUri}:$imageTag"
 docker push "${ecrUri}:latest"
 ```
 
-**Push `:latest` here, and only here.** This is the one time it's safe: nothing else in this project ever pushes `:latest` again (buildspec.yml deliberately doesn't, to avoid the `IMMUTABLE` conflict described in step 5), so there's nothing left to collide with it later.
+**Push `:latest` here, and only here.** Nothing else in this project ever pushes `:latest` again — `buildspec.yml` deliberately only pushes the commit-SHA tag, since a moving `latest` tag isn't useful once the pipeline is producing real, traceable revisions — so there's nothing to collide with it later.
 
 ### Verify
 
@@ -326,6 +336,8 @@ aws codebuild batch-get-projects `
 ```
 
 The CDC requires CodeBuild for build/test/scan, with ≥80% coverage and SAST.
+
+**Note (2026-08-14):** if this account's ECR registry uses Enhanced Scanning (see step 5's `inspector2 batch-get-account-status` check), the CodeBuild role needs `inspector2:ListCoverage` and `inspector2:ListFindings` (both `Resource: "*"`, an AWS constraint — neither action supports resource-level scoping) in addition to `ecr:DescribeImageScanFindings`. Without them, the build's ECR-scan gate (see step 14's troubleshooting) fails with `AccessDeniedException`. Already added to `codebuild.yaml`; nothing extra to do here, just don't remove them if you ever trim this policy down.
 
 ---
 
@@ -724,6 +736,47 @@ Error: Process completed with exit code 1.
 - **CodeBuild:** `buildspec.yml` already `cat`s that file to the build log (CloudWatch Logs, PRE_BUILD phase) whenever the gate fails — just scroll to the `pre_build` section of the failed build's log.
 - **GitHub Actions:** download the `test-reports` artifact from the failed run's summary page and open `semgrep-report.json` inside it (requires being logged in).
 
+## Troubleshooting: Build fails at the `docker push` step with "tag invalid: ... already exists"
+
+**Symptom:** the Build stage fails at `POST_BUILD`, on the `docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"` command, even on a **brand-new commit** whose SHA-tag was never pushed before:
+
+```text
+tag invalid: The image tag '<sha>' already exists in the 'taskmanager-dev' repository
+and cannot be overwritten because the tag is immutable.
+```
+
+**Why:** this was a real, repeatable bug hit on 2026-08-14, not a one-off. Checking ECR's own `imagePushedAt` timestamp against the build's failure timestamp showed the image had **already landed in ECR seconds before** `docker push` reported failure — the push actually succeeded server-side, but the CLI (CodeBuild's `standard:7.0` image ships a BuildKit-based Docker engine) still exited non-zero against the repo's `IMMUTABLE` tag policy. This is a known, unfixed BuildKit/ECR interaction: [moby/buildkit#3776](https://github.com/moby/buildkit/issues/3776), closed by the maintainers as "not planned." It happened on every single build, not just re-runs of an old commit — don't waste time pushing empty commits to "get a fresh tag," that doesn't help.
+
+**Fix:** the ECR repo is `MUTABLE` now (see step 5) — that's the actual fix, already applied. If you ever consider switching back to `IMMUTABLE` for stronger traceability, know that it will bring this exact failure back on every build. It doesn't cost real traceability here: `IMAGE_TAG` is always the commit SHA, so a given tag is only ever pushed once with the same content anyway.
+
+---
+
+## Troubleshooting: Build fails at the ECR scan-gate step (`SCAN ECR`)
+
+**Symptom 1 — `AccessDeniedException: ... inspector2:ListCoverage` or `...inspector2:ListFindings`.**
+**Why:** this account's ECR registry uses Enhanced Scanning (Amazon Inspector v2), not Basic Scanning (confirm with `aws inspector2 batch-get-account-status`, see step 5). Under Enhanced Scanning, `ecr describe-image-scan-findings` and the old `ecr wait image-scan-complete` both proxy to Inspector v2 APIs, which need their own permissions in the CodeBuild role — `ecr:DescribeImageScanFindings` alone isn't enough.
+**Fix:** already added to `codebuild.yaml` (see step 7's note). If you rebuild the IAM policy from scratch, both `inspector2:ListCoverage` and `inspector2:ListFindings` (with `Resource: "*"`) are required.
+
+**Symptom 2 — the build hangs or fails on `aws ecr wait image-scan-complete` with `ScanNotFoundException`, even with the permissions above fixed.**
+**Why:** the `image-scan-complete` waiter polls for `imageScanStatus.status == COMPLETE`. That status only exists under **Basic** Scanning. Under **Enhanced Scanning in continuous mode** (this account), the status stays `ACTIVE` ("Continuous scan is selected for image") forever, and the API returns `ScanNotFoundException` for the first minute or so after a push while Inspector ingests the image — the waiter treats both as fatal, so the gate could never pass.
+**Fix:** `buildspec.yml`'s `POST_BUILD` phase no longer uses the waiter. It polls `describe-image-scan-findings` directly (up to 30 attempts, 10s apart), accepting either `ACTIVE` or `COMPLETE` **and** requiring `imageScanFindings.imageScanCompletedAt` to be present (status alone can appear before findings are actually populated — trusting status alone would let a still-empty scan through as "zero vulnerabilities" by mistake). Already applied; nothing to change unless AWS alters this behavior again.
+
+**Symptom 3 — the gate blocks the build with `N vulnerabilite(s) CRITICAL -> deploiement bloque`.**
+**Why:** that's the gate doing its job (US-05), not a bug. As of 2026-08-14 the `task-manager` image (node:20-alpine base) carries 2 CRITICAL + 30 HIGH CVEs. Reaching the Deploy stage requires updating the base image / dependencies to clear the CRITICALs — there's no way around this gate by design, and there shouldn't be.
+
+**Tip — iterate on `buildspec.yml` without paying for the full stack:** `taskmanager-dev-build`'s CodeBuild project has `Source: GITHUB` + `Artifacts: NO_ARTIFACTS` and no `VpcConfig`, so it can run standalone, independent of the pipeline, ALB, ECS, or even the VPC stack:
+
+```powershell
+aws codebuild start-build --project-name taskmanager-dev-build --region eu-west-2
+```
+
+```powershell
+aws codebuild batch-get-builds --ids <build-id> --region eu-west-2 `
+  --query "builds[0].{Status:buildStatus,Phase:currentPhase}" --output table
+```
+
+This exercises the entire buildspec — SAST, tests, coverage, Docker build, ECR push, and the scan gate — against whatever's on the branch right now. Only `ecr`, `codebuild`, `secrets`, and `iam` need to be deployed for this to work. Use it to debug a buildspec change before spending a full pipeline execution (or the NAT/ALB cost of having the rest of the stack up) on it.
+
 ---
 
 # 15. Autoscaling
@@ -883,6 +936,30 @@ foreach ($s in $stacks) {
 
 The reverse order is required because of the `Fn::ImportValue` dependencies between stacks.
 
+### If `taskmanager-dev-vpc` ends up `DELETE_FAILED`
+
+**Symptom:** `describe-stack-events` shows `PrivateSubnet1`/`PrivateSubnet2` failed to delete with `"has dependencies and cannot be deleted"`.
+
+**Why:** if GuardDuty is enabled on this account, it auto-creates a `com.amazonaws.<region>.guardduty-data` interface VPC endpoint inside every VPC it monitors (tagged `GuardDutyManaged: true`). It isn't part of any CloudFormation stack, so CFN can't remove it, and its ENIs pin the private subnets.
+
+**Fix:** find and delete it, then retry the stack delete.
+
+```powershell
+aws ec2 describe-vpc-endpoints `
+  --region eu-west-2 `
+  --filters "Name=service-name,Values=com.amazonaws.eu-west-2.guardduty-data" `
+  --query "VpcEndpoints[?VpcId=='<taskmanager-vpc-id>'].VpcEndpointId" `
+  --output text
+```
+
+```powershell
+aws ec2 delete-vpc-endpoints --region eu-west-2 --vpc-endpoint-ids <id-from-above>
+```
+
+Wait ~1-2 minutes for the ENIs to detach, then re-run the `delete-stack` / `wait stack-delete-complete` pair from above for `taskmanager-dev-vpc`.
+
+**Caution — don't touch VPCs you don't recognize.** While hunting this endpoint, it's easy to `describe-vpc-endpoints`/`describe-vpcs` and see *other* VPCs in the account with a similar `10.0.0.0/16` CIDR. That CIDR match is a coincidence, not a sign they're related to this project — check each VPC's `Name` tag before deleting anything on it. This account has at least one unrelated VPC (tagged `smartovate-cicd-vpc`) that must be left alone.
+
 ---
 
 # 19. Final check — IMPORTANT
@@ -933,7 +1010,7 @@ Running ECS tasks: none
 
 ---
 
-## The 3 things to watch most closely
+## The 4 things to watch most closely
 
 **1. Secrets Manager's 30-day recovery window blocks a fast redeploy.**
 Deleting the `taskmanager-dev-secrets` stack doesn't immediately free the secret names (`taskmanager/dev/db`, `taskmanager/dev/api-key`) — AWS schedules them for deletion and holds the name for up to 30 days. Redeploying that stack again soon after a teardown fails with `... already scheduled for deletion`. If you hit this, force-delete both secrets before redeploying:
@@ -949,10 +1026,13 @@ Don't start the pipeline until this shows `AVAILABLE`.
 **3. Never leave the NAT Gateway running after the test.**
 It's the main ongoing cost called out throughout this guide.
 
+**4. GuardDuty can leave `taskmanager-dev-vpc` stuck in `DELETE_FAILED`.**
+See step 18's dedicated troubleshooting note — delete the auto-created `guardduty-data` VPC endpoint, then retry.
+
 ### Approaches
 
 * **Recommended for now:** deploy everything → 1 successful pipeline run → verify against the CDC checklist → delete everything.
 * **Minimal budget:** stop after ECS + ALB, but then you haven't demonstrated the full CI/CD flow.
 * **Maximum demonstration:** add a second deployment and trigger a rollback; only useful if you actually need to show the Blue/Green/rollback mechanism.
 
-**Immediate next step:** the Semgrep SAST fix above has been committed. Push it, then re-run steps 13–14 (redeploy the pipeline stack only if you haven't already, then `start-pipeline-execution`) and confirm the Build stage now shows `Succeeded` before moving on to Autoscaling/Observability.
+**Immediate next step (as of 2026-08-14):** the ECR-push and scan-gate fixes above are committed and verified via a standalone `codebuild start-build` — the Build stage now correctly reaches the scan gate and correctly blocks on the image's 2 CRITICAL CVEs. That CVE count is the actual remaining blocker to a full green pipeline run: update the `task-manager` Dockerfile's base image / dependencies to clear the CRITICALs, then redeploy the full stack and re-run steps 13–14 for a genuine end-to-end pass.
