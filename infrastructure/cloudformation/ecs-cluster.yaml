@@ -10,8 +10,8 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE ON DEPLOYMENT ORDER (reference list for the project):
-#   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
-#   5. codebuild.yaml
+#   1. vpc.yml   2. secrets-manager.yaml   3. ecr.yaml   4. codebuild.yaml
+#   5. iam.yaml
 #   6. ecs-cluster.yaml   <- this stack
 #   7. alb.yaml   8. ecs-task-definition.yaml   9. ecs-service.yaml
 #   10. pipeline.yml   11. ecs-autoscaling.yaml   12. observability.yml

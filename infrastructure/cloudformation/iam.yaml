@@ -14,14 +14,16 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE ON DEPLOYMENT ORDER:
-#   1. vpc.yml   2. iam.yaml   <- this stack
-#   3. secrets-manager.yaml   4. ecr.yaml   5. codebuild.yaml
+#   1. vpc.yml   2. secrets-manager.yaml   3. ecr.yaml   4. codebuild.yaml
+#   5. iam.yaml   <- this stack
 #   6. ecs-cluster.yaml   7. alb.yaml   8. ecs-task-definition.yaml
-#   9. ecs-service.yaml   10. pipeline.yml   11. observability.yml
+#   9. ecs-service.yaml   10. pipeline.yml   11. ecs-autoscaling.yaml
+#   12. observability.yml
 #
-# iam.yaml does not import anything other than the ECR repo ARN (ECR
-# statement for CodeBuild) and therefore deploys very early: most of the
-# following stacks import its roles.
+# iam.yaml imports the CodeBuild project ARN (codebuild.yaml) for the
+# CodePipeline role's codebuild:StartBuild/BatchGetBuilds permissions, and
+# therefore deploys right after codebuild.yaml: most of the following
+# stacks then import iam.yaml's roles in turn.
 # ------------------------------------------------------------------
 
 Parameters:
