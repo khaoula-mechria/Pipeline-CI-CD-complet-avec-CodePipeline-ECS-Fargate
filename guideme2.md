@@ -225,7 +225,7 @@ The CDC requires:
 * pushed to ECR;
 * scanned for vulnerabilities.
 
-One known risk to keep in mind: the repository is `IMMUTABLE`, and the buildspec also pushes a `latest` tag on every build. Once an image already owns the `latest` tag, pushing it again on a **second** build will be rejected by ECR (immutable tags cannot be overwritten). This does not block a first successful build/test, so **don't change anything now** if your immediate goal is just to prove the pipeline once.
+The repository is `IMMUTABLE` (tags can't be overwritten once pushed). `buildspec.yml` only pushes the commit-SHA tag now — an earlier version also pushed a `latest` tag on every build, which would have been rejected by ECR from the second build onward for that exact reason. Already fixed; nothing to do here.
 
 ---
 
@@ -252,7 +252,7 @@ cd task-manager
 $imageTag = (git rev-parse --short=8 HEAD)
 Write-Host "Image tag for this manual build -> $imageTag"
 
-docker build -t "${ecrUri}:$imageTag" -t "${ecrUri}:latest" .
+docker build -t "${ecrUri}:$imageTag" .
 
 cd ..
 ```
@@ -263,11 +263,10 @@ Check the image size (target: under 200 MB):
 docker images "${ecrUri}:$imageTag"
 ```
 
-Push both tags:
+Push it:
 
 ```powershell
 docker push "${ecrUri}:$imageTag"
-docker push "${ecrUri}:latest"
 ```
 
 ### Verify
@@ -281,8 +280,6 @@ aws ecr describe-images `
 ```
 
 **Note:** this only proves the image builds and pushes. It does **not** run the unit tests, the coverage gate, or the SAST (Semgrep) scan — those only run inside CodeBuild/CI, via `buildspec.yml` and `.github/workflows/ci.yml`. Passing this manual step is a good sign, but it does not guarantee CodeBuild's automated build (step 7) will succeed too.
-
-**Also note:** if you push `:latest` here and then let CodeBuild push `:latest` again on its first real build, that second push will hit the `IMMUTABLE` tag conflict described in step 5. For a first end-to-end test, it's simplest to skip pushing `:latest` manually (push only `${ecrUri}:$imageTag`) and let CodeBuild own the `:latest` tag.
 
 ---
 
@@ -933,8 +930,13 @@ Running ECS tasks: none
 
 ## The 3 things to watch most closely
 
-**1. ECR `IMMUTABLE` + `latest`**
-This is the known issue flagged in step 5. For today's test, do a single build.
+**1. Secrets Manager's 30-day recovery window blocks a fast redeploy.**
+Deleting the `taskmanager-dev-secrets` stack doesn't immediately free the secret names (`taskmanager/dev/db`, `taskmanager/dev/api-key`) — AWS schedules them for deletion and holds the name for up to 30 days. Redeploying that stack again soon after a teardown fails with `... already scheduled for deletion`. If you hit this, force-delete both secrets before redeploying:
+```powershell
+aws secretsmanager delete-secret --secret-id taskmanager/dev/db --force-delete-without-recovery --region eu-west-2
+aws secretsmanager delete-secret --secret-id taskmanager/dev/api-key --force-delete-without-recovery --region eu-west-2
+```
+Consider running this as part of step 18's teardown from now on, right after the `delete-stack` loop, so it never blocks the next session.
 
 **2. GitHub Connection = `AVAILABLE`**
 Don't start the pipeline until this shows `AVAILABLE`.
