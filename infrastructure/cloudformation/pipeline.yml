@@ -13,44 +13,44 @@ Description: >
   - CodePipeline (GitHub Source -> CodeBuild Build -> CodeDeployToECS Deploy).
 
 # ------------------------------------------------------------------
-# CHOIX Blue/Green vs Rolling :
-# On utilise AWS CodeDeploy pour un deploiement Blue/Green ECS plutôt qu'un
-# deploiement rolling pilote directement par ECS (DeploymentController
-# type ECS), parce que Blue/Green apporte deux garanties qu'un rolling
-# update ECS natif n'a pas :
-#   1. Bascule de trafic contrôlee et progressive (DeploymentConfigName
-#      ECSLinear10PercentEvery1Minute) via un second listener/target group
-#      (Green), au lieu de remplacer les taches une a une derriere le même
+# Blue/Green vs Rolling CHOICE:
+# We use AWS CodeDeploy for a Blue/Green ECS deployment rather than a
+# rolling deployment driven directly by ECS (DeploymentController
+# type ECS), because Blue/Green provides two guarantees that a native
+# ECS rolling update does not:
+#   1. Controlled, progressive traffic shift (DeploymentConfigName
+#      ECSLinear10PercentEvery1Minute) via a second listener/target group
+#      (Green), instead of replacing tasks one by one behind the same
 #      target group.
-#   2. Rollback automatique quasi instantane (AutoRollbackConfiguration sur
-#      DEPLOYMENT_FAILURE) : si les nouvelles taches echouent leurs health
-#      checks pendant le traffic shift, CodeDeploy reoriente 100% du trafic
-#      vers Blue (l'ancienne version) SANS jamais l'avoir coupee. Un rolling
-#      update ECS classique aurait deja commence a terminer les anciennes
-#      taches a ce stade.
-# Coût : une paire de target groups (alb.yaml) + un listener de test (8080)
-# supplementaires — acceptable pour la fiabilite gagnee sur un projet de
-# portfolio DevOps qui veut demontrer ce pattern.
+#   2. Near-instant automatic rollback (AutoRollbackConfiguration on
+#      DEPLOYMENT_FAILURE): if the new tasks fail their health
+#      checks during the traffic shift, CodeDeploy redirects 100% of the
+#      traffic back to Blue (the previous version) WITHOUT ever having cut
+#      it off. A classic ECS rolling update would already have started
+#      terminating the old tasks at that point.
+# Cost: an extra pair of target groups (alb.yaml) + a test listener (8080)
+# — acceptable for the reliability gained on a DevOps portfolio
+# project that wants to demonstrate this pattern.
 # ------------------------------------------------------------------
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DePLOIEMENT (deja documente dans iam.yaml/ecs-cluster.yaml) :
+# NOTE ON DEPLOYMENT ORDER (already documented in iam.yaml/ecs-cluster.yaml):
 #   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
 #   5. codebuild.yaml   6. ecs-cluster.yaml   7. alb.yaml
 #   8. ecs-task-definition.yaml   9. ecs-service.yaml
-#   10. pipeline.yml  <- cette stack (importe les exports des 9 stacks
-#      precedentes ; ne cree plus l'ECS Fargate Service ni l'ALB elle-même)
+#   10. pipeline.yml  <- this stack (imports the exports of the 9
+#      preceding stacks; no longer creates the ECS Fargate Service or the ALB itself)
 #   11. ecs-autoscaling.yaml   12. observability.yml
 #
-# Le topic SNS cree ici est consomme par les alarmes de ecs-autoscaling.yaml
-# et de observability.yml — d'où leur position apres cette stack.
+# The SNS topic created here is consumed by the alarms in ecs-autoscaling.yaml
+# and observability.yml — hence their position after this stack.
 #
-# PReREQUIS AVANT DePLOIEMENT ReEL :
-#   - GitHubConnection (iam.yaml) doit être autorisee manuellement dans la
-#     console AWS (Developer Tools > Connections) — sinon le stage Source
-#     de ce pipeline reste bloque en PENDING.
-#   - Le repo GitHub pointe par FullRepositoryId doit contenir, a sa racine :
-#     buildspec.yml, appspec.yaml, taskdef.template.json (voir task-manager/).
+# PREREQUISITES BEFORE ACTUAL DEPLOYMENT:
+#   - GitHubConnection (iam.yaml) must be authorized manually in the
+#     AWS console (Developer Tools > Connections) — otherwise the Source stage
+#     of this pipeline stays stuck in PENDING.
+#   - The GitHub repo pointed to by FullRepositoryId must contain, at its root:
+#     buildspec.yml, appspec.yaml, taskdef.template.json (see task-manager/).
 # ------------------------------------------------------------------
 
 Parameters:
@@ -101,19 +101,19 @@ Parameters:
       and the <10 minute cycle goal (§1.2).
 
 Conditions:
-  # Contrôle l'inclusion du stage Approval dans le pipeline (voir le parametre
-  # EnableManualApproval ci-dessus).
+  # Controls whether the Approval stage is included in the pipeline (see the
+  # EnableManualApproval parameter above).
   HasManualApproval: !Equals [!Ref EnableManualApproval, 'true']
 
 Resources:
 
   # ==========================================================================
-  # BUCKET S3 D'ARTEFACTS DU PIPELINE
-  # Nom EXACT attendu par CodePipelineServiceRole (iam.yaml, statement
-  # PipelineArtifactsBucketAccess) : ne pas changer la convention de nommage
-  # sans mettre a jour iam.yaml en consequence. Versioning obligatoire : la
-  # policy IAM autorise s3:GetBucketVersioning, et CodePipeline exige un
-  # bucket versionne pour son ArtifactStore.
+  # PIPELINE ARTIFACTS S3 BUCKET
+  # EXACT name expected by CodePipelineServiceRole (iam.yaml, statement
+  # PipelineArtifactsBucketAccess): do not change the naming convention
+  # without updating iam.yaml accordingly. Versioning is mandatory: the
+  # IAM policy allows s3:GetBucketVersioning, and CodePipeline requires a
+  # versioned bucket for its ArtifactStore.
   # ==========================================================================
   PipelineArtifactsBucket:
     Type: AWS::S3::Bucket
@@ -143,14 +143,14 @@ Resources:
           Value: !Ref Environment
 
   # ==========================================================================
-  # NOTIFICATIONS SNS (F4 du cahier des charges)
-  # Nom prefixe ${ProjectName}-${Environment}- : convention attendue par
-  # CodePipelineServiceRole (statement PublishPipelineNotifications) — cette
-  # permission est reservee a un futur stage ManualApproval (CodePipeline
-  # publie alors directement via son propre rôle). Les notifications de
-  # changement d'etat (SUCCESS/FAILED/...) implementees ici passent par
-  # EventBridge, qui a besoin de SA PROPRE permission de publication
-  # (TopicPolicy ci-dessous), independante du rôle CodePipeline.
+  # SNS NOTIFICATIONS (F4 of the requirements specification)
+  # Name prefixed ${ProjectName}-${Environment}-: convention expected by
+  # CodePipelineServiceRole (statement PublishPipelineNotifications) — this
+  # permission is reserved for a future ManualApproval stage (CodePipeline
+  # then publishes directly via its own role). The state change
+  # notifications (SUCCESS/FAILED/...) implemented here go through
+  # EventBridge, which needs ITS OWN publish permission
+  # (TopicPolicy below), independent of the CodePipeline role.
   # ==========================================================================
   PipelineNotificationsTopic:
     Type: AWS::SNS::Topic
@@ -185,8 +185,8 @@ Resources:
     Properties:
       Name: !Sub '${ProjectName}-${Environment}-pipeline-state-change'
       Description: >
-        Notifie PipelineNotificationsTopic a chaque changement d'etat du
-        pipeline (demarrage, succes, echec...) — F4 du cahier des charges.
+        Notifies PipelineNotificationsTopic on every pipeline state
+        change (start, success, failure...) — F4 of the requirements specification.
       EventPattern:
         source:
           - aws.codepipeline
@@ -208,14 +208,14 @@ Resources:
 
   # ==========================================================================
   # CODEDEPLOY — APPLICATION + DEPLOYMENT GROUP (Blue/Green ECS)
-  # ServiceRoleArn importe de iam.yaml (policy managee AWSCodeDeployRoleForECS,
-  # cf. CodeDeployServiceRole). Cluster/service ECS et target groups/listeners
-  # ALB importes des stacks dediees (ecs-cluster.yaml, ecs-service.yaml,
-  # alb.yaml) — plus aucune ressource reseau/compute recreee ici.
-  # DeploymentConfigName ECSLinear10PercentEvery1Minute est l'equivalent
-  # predefini AWS le plus proche du traffic shift F3 du cahier des charges
-  # (10 % -> 100 % en ~10 min, palier toutes les minutes) — AWS ne propose
-  # pas de config predefinie avec paliers 10/50/100 exacts.
+  # ServiceRoleArn imported from iam.yaml (managed policy AWSCodeDeployRoleForECS,
+  # see CodeDeployServiceRole). ECS cluster/service and ALB target
+  # groups/listeners imported from dedicated stacks (ecs-cluster.yaml,
+  # ecs-service.yaml, alb.yaml) — no network/compute resource is recreated here.
+  # DeploymentConfigName ECSLinear10PercentEvery1Minute is the closest
+  # predefined AWS equivalent to the F3 traffic shift requirement
+  # (10% -> 100% in ~10 min, one step per minute) — AWS does not offer
+  # a predefined config with exact 10/50/100 steps.
   # ==========================================================================
   CodeDeployApplication:
     Type: AWS::CodeDeploy::Application
@@ -261,8 +261,8 @@ Resources:
             'Fn::Sub': '${ProjectName}-${Environment}-ecs-cluster-name'
           ServiceName: !ImportValue
             'Fn::Sub': '${ProjectName}-${Environment}-ecs-service-name'
-      # Rollback automatique sur echec de deploiement (health checks ECS/ALB
-      # qui echouent pendant le traffic shift) — critere US-03 / F3.
+      # Automatic rollback on deployment failure (ECS/ALB health checks
+      # failing during the traffic shift) — US-03 / F3 criterion.
       AutoRollbackConfiguration:
         Enabled: true
         Events:
@@ -270,11 +270,11 @@ Resources:
 
   # ==========================================================================
   # CODEPIPELINE — Source (GitHub) -> Build (CodeBuild) -> Deploy (CodeDeployToECS)
-  # ApplicationName/DeploymentGroupName references en dur via convention de
-  # nommage (comme dans CodeDeployApplication/DeploymentGroup ci-dessus)
-  # plutôt que par Ref, pour rester coherent avec le reste du fichier et
-  # eviter toute ambiguïte sur ce que Ref renvoie pour ces deux types de
-  # ressources.
+  # ApplicationName/DeploymentGroupName referenced hardcoded via the naming
+  # convention (as in CodeDeployApplication/DeploymentGroup above)
+  # rather than via Ref, to stay consistent with the rest of the file and
+  # avoid any ambiguity about what Ref returns for these two resource
+  # types.
   # ==========================================================================
   CodePipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -315,7 +315,7 @@ Resources:
                 Provider: CodeBuild
                 Version: '1'
               Configuration:
-                # Convention de nommage codebuild.yaml : '${ProjectName}-${Environment}-build'.
+                # Naming convention from codebuild.yaml: '${ProjectName}-${Environment}-build'.
                 ProjectName: !Sub '${ProjectName}-${Environment}-build'
               InputArtifacts:
                 - Name: SourceArtifact
@@ -324,28 +324,29 @@ Resources:
               RunOrder: 1
 
         # ====================================================================
-        # STAGE APPROVAL (F4) — approbation humaine entre Build et Deploy.
+        # APPROVAL STAGE (F4) — human approval between Build and Deploy.
         #
-        # C'est ce stage qui cree l'etat "approval pending" que F4 demande de
-        # notifier. Le mecanisme est natif : renseigner NotificationArn fait
-        # publier par CodePipeline lui-même, sur le topic SNS, un message
-        # contenant le lien d'approbation des que le pipeline se met en
-        # attente. Aucune regle EventBridge supplementaire n'est necessaire —
-        # et il n'y en aurait pas de satisfaisante, car "en attente
-        # d'approbation" n'est pas un etat d'execution de pipeline : du point
-        # de vue de CodePipeline l'execution reste simplement InProgress.
+        # This is the stage that creates the "approval pending" state that F4
+        # requires to be notified. The mechanism is native: setting
+        # NotificationArn makes CodePipeline itself publish a message on the
+        # SNS topic containing the approval link as soon as the pipeline
+        # goes into a waiting state. No additional EventBridge rule is
+        # needed — and none would be satisfactory anyway, since "pending
+        # approval" is not a pipeline execution state: from CodePipeline's
+        # point of view, the execution simply stays InProgress.
         #
-        # Permissions : CodePipeline publie avec le rôle de service du
-        # pipeline, qui porte deja sns:Publish (iam.yaml). Rien a ajouter dans
-        # la policy du topic : en intra-compte, l'autorisation identity-based
-        # suffit pour SNS.
+        # Permissions: CodePipeline publishes using the pipeline's service
+        # role, which already carries sns:Publish (iam.yaml). Nothing needs
+        # to be added to the topic policy: within the same account, the
+        # identity-based authorization is sufficient for SNS.
         #
-        # Le stage est CONDITIONNEL (parametre EnableManualApproval) : voir la
-        # description de ce parametre pour la contradiction assumee avec US-01,
-        # qui exige au contraire un deploiement "sans intervention manuelle".
+        # The stage is CONDITIONAL (EnableManualApproval parameter): see the
+        # description of that parameter for the assumed contradiction with
+        # US-01, which instead requires a deployment "without manual
+        # intervention".
         #
-        # a SAVOIR : une approbation non traitee expire au bout de 7 jours
-        # (limite AWS, non configurable) et l'execution passe alors en echec.
+        # NOTE: an unprocessed approval expires after 7 days (AWS limit, not
+        # configurable) and the execution then goes to failure.
         # ====================================================================
         - !If
           - HasManualApproval
@@ -359,11 +360,11 @@ Resources:
                   Version: '1'
                 Configuration:
                   NotificationArn: !Ref PipelineNotificationsTopic
-                  # Message affiche a l'approbateur dans la console et repris
-                  # dans l'email SNS (140 caracteres maximum).
+                  # Message shown to the approver in the console and included
+                  # in the SNS email (140 characters maximum).
                   CustomData: !Sub >-
-                    Deployer ${ProjectName} (${Environment}) en Blue/Green sur ECS Fargate ?
-                    Build, tests, SAST et scan ECR sont deja passes.
+                    Deploy ${ProjectName} (${Environment}) in Blue/Green on ECS Fargate?
+                    Build, tests, SAST, and ECR scan have already passed.
                 RunOrder: 1
           - !Ref AWS::NoValue
 
@@ -378,18 +379,18 @@ Resources:
               Configuration:
                 ApplicationName: !Sub '${ProjectName}-${Environment}-app'
                 DeploymentGroupName: !Sub '${ProjectName}-${Environment}-dg'
-                # taskdef.json est GeNeRe par buildspec.yml (ARN de rôles
-                # injectes au build, cf. task-manager/taskdef.template.json)
-                # -> vient de l'artefact de BUILD, pas de Source.
+                # taskdef.json is GENERATED by buildspec.yml (role ARNs
+                # injected at build time, see task-manager/taskdef.template.json)
+                # -> comes from the BUILD artifact, not Source.
                 TaskDefinitionTemplateArtifact: BuildArtifact
                 TaskDefinitionTemplatePath: taskdef.json
-                # appspec.yaml ne contient aucune valeur specifique au compte
-                # -> peut rester versionne tel quel dans le repo (Source).
+                # appspec.yaml contains no account-specific values
+                # -> can stay versioned as-is in the repo (Source).
                 AppSpecTemplateArtifact: SourceArtifact
                 AppSpecTemplatePath: appspec.yaml
                 Image1ArtifactName: BuildArtifact
-                # Doit correspondre au placeholder <IMAGE1_NAME> utilise
-                # dans taskdef.template.json (champ "image" du conteneur).
+                # Must match the <IMAGE1_NAME> placeholder used
+                # in taskdef.template.json (container "image" field).
                 Image1ContainerName: IMAGE1_NAME
               InputArtifacts:
                 - Name: SourceArtifact

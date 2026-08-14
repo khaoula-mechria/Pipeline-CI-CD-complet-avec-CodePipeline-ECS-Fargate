@@ -12,11 +12,11 @@ Description: >
   action-reference-ECSbluegreen).
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DePLOIEMENT (voir ecs-cluster.yaml) :
-#   ... 7. alb.yaml   8. ecs-task-definition.yaml   <- cette stack   ...
+# NOTE ON DEPLOYMENT ORDER (see ecs-cluster.yaml):
+#   ... 7. alb.yaml   8. ecs-task-definition.yaml   <- this stack   ...
 #
-# Depend aussi de 3. secrets-manager.yaml : le bloc Secrets ci-dessous importe
-# les ARN des secrets. Sans cette stack, le deploiement echoue a l'import.
+# Also depends on 3. secrets-manager.yaml: the Secrets block below imports
+# the secret ARNs. Without this stack, the deployment fails at the import step.
 # ------------------------------------------------------------------
 
 Parameters:
@@ -68,22 +68,22 @@ Conditions:
 Resources:
 
   # ==========================================================================
-  # LOG GROUP CLOUDWATCH — logs applicatifs du conteneur (stdout/stderr)
+  # CLOUDWATCH LOG GROUP — container application logs (stdout/stderr)
   # ==========================================================================
   EcsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/ecs/${ProjectName}-${Environment}'
-      # Retention 30 jours : F4 du cahier des charges.
+      # 30-day retention: requirement F4 of the specifications.
       RetentionInDays: 30
 
   # ==========================================================================
   # TASK DEFINITION
-  # ExecutionRoleArn / TaskRoleArn importes de iam.yaml : jamais de rôle
-  # duplique ici (principe DRY deja applique dans le reste du projet).
-  # Environment : variables applicatives non sensibles uniquement — tout
-  # secret doit passer par Secrets/ARN dans ce même bloc (voir Secrets
-  # ci-dessous), jamais en clair.
+  # ExecutionRoleArn / TaskRoleArn imported from iam.yaml: never duplicate
+  # a role here (DRY principle already applied throughout the project).
+  # Environment: non-sensitive application variables only — any secret
+  # must go through Secrets/ARN in this same block (see Secrets
+  # below), never in plaintext.
   # ==========================================================================
   EcsTaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -111,41 +111,41 @@ Resources:
           PortMappings:
             - ContainerPort: !Ref ContainerPort
               Protocol: tcp
-          # Variables d'environnement non sensibles de l'application.
-          # -> Pour ajouter une variable applicative : ajoute une entree
-          #    Name/Value ici (ex: LOG_LEVEL, API_BASE_URL...).
-          # -> Pour une valeur SENSIBLE (mot de passe, cle API...), ne JAMAIS
-          #    l'ajouter ici en clair : utilise plutôt "Secrets:" avec un ARN
-          #    Secrets Manager sous ${ProjectName}/${Environment}/* (voir
-          #    la policy ReadAppSecrets deja prevue dans iam.yaml,
+          # Non-sensitive environment variables for the application.
+          # -> To add an application variable: add a Name/Value entry
+          #    here (e.g. LOG_LEVEL, API_BASE_URL...).
+          # -> For a SENSITIVE value (password, API key...), NEVER
+          #    add it here in plaintext: use "Secrets:" instead, with a
+          #    Secrets Manager ARN under ${ProjectName}/${Environment}/* (see
+          #    the ReadAppSecrets policy already provided in iam.yaml,
           #    EcsTaskExecutionRole).
           Environment:
             - Name: PROJECT_NAME
               Value: !Ref ProjectName
-            # NODE_ENV est une valeur technique attendue par Node/Express
-            # ("production" active la mise en cache des vues et masque les
-            # stacktraces) : elle ne doit PAS recevoir dev/staging/prod, sinon
-            # elle ecrase le `ENV NODE_ENV=production` du Dockerfile et
-            # l'application tourne en mode degrade jusqu'en production.
+            # NODE_ENV is a technical value expected by Node/Express
+            # ("production" enables view caching and hides
+            # stack traces): it must NOT receive dev/staging/prod, otherwise
+            # it would override the Dockerfile's `ENV NODE_ENV=production` and
+            # the application would run in degraded mode all the way to production.
             - Name: NODE_ENV
               Value: production
-            # Le nom de l'environnement du projet est expose separement.
+            # The project's environment name is exposed separately.
             - Name: APP_ENV
               Value: !Ref Environment
           # ====================================================================
-          # SECRETS (F3) — injectes au demarrage du conteneur par l'agent ECS,
-          # qui les lit dans Secrets Manager avec EcsTaskExecutionRole.
+          # SECRETS (F3) — injected at container startup by the ECS agent,
+          # which reads them from Secrets Manager using EcsTaskExecutionRole.
           #
-          # Ils arrivent dans le conteneur comme des variables d'environnement
-          # classiques, MAIS leur valeur n'est stockee nulle part en clair :
-          # ni dans ce template, ni dans taskdef.json, ni dans les variables
-          # d'environnement du projet CodeBuild — seuls des ARN circulent.
-          # `aws ecs describe-task-definition` ne renvoie que l'ARN, jamais la
-          # valeur, contrairement au bloc Environment ci-dessus.
+          # They arrive inside the container as ordinary environment
+          # variables, BUT their value is never stored in plaintext anywhere:
+          # not in this template, not in taskdef.json, not in the CodeBuild
+          # project's environment variables — only ARNs are passed around.
+          # `aws ecs describe-task-definition` only returns the ARN, never the
+          # value, unlike the Environment block above.
           #
-          # Syntaxe "<arn>:<cleJson>::" : extrait UNE cle d'un secret JSON.
-          # Les 2 champs vides finaux sont version-stage et version-id (non
-          # precises = version courante, AWSCURRENT).
+          # Syntax "<arn>:<jsonKey>::": extracts ONE key from a JSON secret.
+          # The 2 trailing empty fields are version-stage and version-id (not
+          # specified = current version, AWSCURRENT).
           # ====================================================================
           Secrets:
             - Name: DB_USERNAME
@@ -158,8 +158,8 @@ Resources:
                 - '${SecretArn}:password::'
                 - SecretArn: !ImportValue
                     'Fn::Sub': '${ProjectName}-${Environment}-db-secret-arn'
-            # Secret a valeur simple (pas de JSON) : l'ARN nu suffit, sans
-            # suffixe de cle.
+            # Plain-value secret (not JSON): the bare ARN is enough, no
+            # key suffix needed.
             - Name: API_KEY
               ValueFrom: !ImportValue
                 'Fn::Sub': '${ProjectName}-${Environment}-api-key-secret-arn'

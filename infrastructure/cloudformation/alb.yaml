@@ -11,8 +11,8 @@ Description: >
     architecture is ready: see HttpsListener (Condition) below.
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DePLOIEMENT (voir ecs-cluster.yaml) :
-#   ... 6. ecs-cluster.yaml   7. alb.yaml   <- cette stack   ...
+# NOTE ON DEPLOYMENT ORDER (see ecs-cluster.yaml):
+#   ... 6. ecs-cluster.yaml   7. alb.yaml   <- this stack   ...
 # ------------------------------------------------------------------
 
 Parameters:
@@ -66,7 +66,7 @@ Conditions:
 Resources:
 
   # ==========================================================================
-  # SECURITY GROUP DE L'ALB
+  # ALB SECURITY GROUP
   # Open to the public on 80 (prod) and 8080 (CodeDeploy test listener,
   # used ONLY during Blue/Green validation and never exposed to real users).
   # Port 443 is added conditionally when a certificate is provided.

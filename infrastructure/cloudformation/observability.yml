@@ -11,11 +11,11 @@ Description: >
     the SNS topic already created in pipeline.yml.
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DePLOIEMENT (voir ecs-cluster.yaml pour la liste
-# complete des 12 stacks) :
+# NOTE ON DEPLOYMENT ORDER (see ecs-cluster.yaml for the full list
+# of 12 stacks):
 #   ... 10. pipeline.yml   11. ecs-autoscaling.yaml
-#   12. observability.yml  <- cette stack (importe les exports de
-#      pipeline.yml : topic SNS, noms ECS, ALB/target group)
+#   12. observability.yml  <- this stack (imports the exports from
+#      pipeline.yml: SNS topic, ECS names, ALB/target group)
 # ------------------------------------------------------------------
 
 Parameters:
@@ -53,12 +53,12 @@ Conditions:
 Resources:
 
   # ==========================================================================
-  # LAMBDA — publication des metriques custom du pipeline
-  # CodePipeline ne publie pas nativement de metrique de duree/succes en
-  # CloudWatch (contrairement a CodeBuild, qui publie deja Duration/
-  # SucceededBuilds/FailedBuilds dans AWS/CodeBuild — recuperees directement
-  # dans le dashboard plus bas, SANS Lambda). Cette fonction comble ce trou
-  # precisement pour CICD-TK-18 ("definir les metriques custom").
+  # LAMBDA — publishes the pipeline's custom metrics
+  # CodePipeline does not natively publish duration/success metrics to
+  # CloudWatch (unlike CodeBuild, which already publishes Duration/
+  # SucceededBuilds/FailedBuilds in AWS/CodeBuild — retrieved directly
+  # in the dashboard below, WITHOUT a Lambda). This function fills that gap,
+  # specifically for CICD-TK-18 ("define the custom metrics").
   # ==========================================================================
   MetricsPublisherLogGroup:
     Type: AWS::Logs::LogGroup
@@ -99,9 +99,9 @@ Resources:
                 Effect: Allow
                 Action:
                   - cloudwatch:PutMetricData
-                # cloudwatch:PutMetricData n'accepte pas de restriction par
-                # ARN (contrainte AWS) ; portee limitee par une Condition
-                # sur le namespace pour eviter toute publication hors sujet.
+                # cloudwatch:PutMetricData does not accept an ARN-based
+                # restriction (AWS constraint); scope limited via a Condition
+                # on the namespace to prevent any unrelated publication.
                 Resource: '*'
                 Condition:
                   StringEquals:
@@ -139,7 +139,7 @@ Resources:
               detail = event["detail"]
               pipeline_name = detail["pipeline"]
               execution_id = detail["execution-id"]
-              state = detail["state"]  # SUCCEEDED ou FAILED
+              state = detail["state"]  # SUCCEEDED or FAILED
 
               metrics = [
                   {
@@ -154,9 +154,9 @@ Resources:
                   },
               ]
 
-              # Duree = lastUpdateTime - startTime de CETTE execution precise
-              # (list_pipeline_executions est la seule API CodePipeline qui
-              # expose ces deux timestamps ensemble).
+              # Duration = lastUpdateTime - startTime of THIS specific execution
+              # (list_pipeline_executions is the only CodePipeline API that
+              # exposes both of these timestamps together).
               try:
                   paginator = codepipeline.get_paginator("list_pipeline_executions")
                   for page in paginator.paginate(pipelineName=pipeline_name):
@@ -174,7 +174,7 @@ Resources:
                               )
                               break
               except Exception as exc:  # noqa: BLE001
-                  print(f"Impossible de calculer la duree du pipeline: {exc}")
+                  print(f"Unable to compute the pipeline duration: {exc}")
 
               cloudwatch.put_metric_data(Namespace=NAMESPACE, MetricData=metrics)
               return {"status": "ok", "metricsPublished": len(metrics)}
@@ -192,14 +192,14 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt PipelineMetricsEventRule.Arn
 
-  # Regle EventBridge DeDIeE (distincte de PipelineStateChangeRule dans
-  # pipeline.yaml, qui cible le topic SNS) : ne reagit qu'aux 2 etats
-  # "terminaux" (duree connue), pas a STARTED.
+  # Dedicated EventBridge rule (distinct from PipelineStateChangeRule in
+  # pipeline.yaml, which targets the SNS topic): only reacts to the 2
+  # "terminal" states (duration known), not to STARTED.
   PipelineMetricsEventRule:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub '${ProjectName}-${Environment}-pipeline-metrics-trigger'
-      Description: Declenche la publication des metriques custom du pipeline.
+      Description: Triggers the publication of the pipeline's custom metrics.
       EventPattern:
         source:
           - aws.codepipeline
@@ -216,17 +216,18 @@ Resources:
           Id: MetricsPublisherTarget
 
   # ==========================================================================
-  # ALARMES CLOUDWATCH (CICD-TK-20) -> notifient le topic SNS de pipeline.yaml
+  # CLOUDWATCH ALARMS (CICD-TK-20) -> notify the SNS topic from pipeline.yaml
   # ==========================================================================
   PipelineDurationAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-pipeline-duration-alarm'
       AlarmDescription: >
-        Duree du pipeline au-dela du seuil (F4 : 15 min par defaut). Base
-        sur la metrique custom PipelineDuration (publiee par
-        MetricsPublisherFunction a chaque fin d'execution) — ne peut donc se
-        declencher qu'APReS coup, pas pendant un pipeline encore en cours.
+        Pipeline duration above the threshold (F4: 15 min by default). Based
+        on the custom PipelineDuration metric (published by
+        MetricsPublisherFunction at the end of each execution) — it can
+        therefore only trigger AFTER the fact, not while a pipeline is
+        still in progress.
       Namespace: !Sub '${ProjectName}/${Environment}/Pipeline'
       MetricName: PipelineDuration
       Statistic: Maximum
@@ -244,9 +245,9 @@ Resources:
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-pipeline-failure-alarm'
       AlarmDescription: >
-        Au moins un echec de pipeline sur la periode — vient s'ajouter a la
-        notification SNS immediate (EventBridge, pipeline.yaml) avec un
-        signal agrege visible dans CloudWatch/le dashboard.
+        At least one pipeline failure over the period — adds to the
+        immediate SNS notification (EventBridge, pipeline.yaml) with an
+        aggregated signal visible in CloudWatch/the dashboard.
       Namespace: !Sub '${ProjectName}/${Environment}/Pipeline'
       MetricName: PipelineFailure
       Statistic: Sum
@@ -260,7 +261,7 @@ Resources:
           'Fn::Sub': '${ProjectName}-${Environment}-pipeline-notifications-arn'
 
   # ==========================================================================
-  # ABONNEMENT EMAIL OPTIONNEL (US-04) sur le topic SNS existant
+  # OPTIONAL EMAIL SUBSCRIPTION (US-04) on the existing SNS topic
   # ==========================================================================
   AlarmEmailSubscription:
     Type: AWS::SNS::Subscription
@@ -272,19 +273,19 @@ Resources:
       Endpoint: !Ref AlarmEmail
 
   # ==========================================================================
-  # DASHBOARD CLOUDWATCH (CICD-TK-19) — US-04 : duree moyenne, taux de
-  # succes (7j glissants), nombre de deploiements, + CodeBuild/ECS/ALB.
+  # CLOUDWATCH DASHBOARD (CICD-TK-19) — US-04: average duration, success
+  # rate (7-day rolling), number of deployments, + CodeBuild/ECS/ALB.
   # ==========================================================================
   PipelineDashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
       DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
-      # Forme a 2 arguments de Fn::Sub : un Fn::Sub simple ne sait resoudre
-      # que des Parameters/pseudo-parametres/Ref/GetAtt de CE template — pas
-      # des valeurs importees d'une autre stack. La map (2e element de la
-      # liste) injecte EcsClusterName/EcsServiceName/AlbFullName/
-      # BlueTargetGroupFullName (tous importes de pipeline.yaml) comme
-      # variables de substitution supplementaires.
+      # 2-argument form of Fn::Sub: a plain Fn::Sub can only resolve
+      # Parameters/pseudo-parameters/Ref/GetAtt of THIS template — not
+      # values imported from another stack. The map (2nd element of the
+      # list) injects EcsClusterName/EcsServiceName/AlbFullName/
+      # BlueTargetGroupFullName (all imported from pipeline.yaml) as
+      # additional substitution variables.
       DashboardBody: !Sub
         - |
           {
@@ -300,7 +301,7 @@ Resources:
                 "type": "metric",
                 "x": 0, "y": 1, "width": 8, "height": 6,
                 "properties": {
-                  "title": "Duree du pipeline (s)",
+                  "title": "Pipeline duration (s)",
                   "view": "timeSeries",
                   "region": "${AWS::Region}",
                   "metrics": [
@@ -308,7 +309,7 @@ Resources:
                   ],
                   "annotations": {
                     "horizontal": [
-                      { "label": "Seuil alarme", "value": ${PipelineDurationThresholdSeconds} }
+                      { "label": "Alarm threshold", "value": ${PipelineDurationThresholdSeconds} }
                     ]
                   }
                 }
@@ -317,13 +318,13 @@ Resources:
                 "type": "metric",
                 "x": 8, "y": 1, "width": 8, "height": 6,
                 "properties": {
-                  "title": "Deploiements (succes vs echecs)",
+                  "title": "Deployments (success vs failures)",
                   "view": "timeSeries",
                   "stacked": true,
                   "region": "${AWS::Region}",
                   "metrics": [
-                    [ "${ProjectName}/${Environment}/Pipeline", "PipelineSuccess", { "stat": "Sum", "label": "Succes" } ],
-                    [ "${ProjectName}/${Environment}/Pipeline", "PipelineFailure", { "stat": "Sum", "label": "echecs" } ]
+                    [ "${ProjectName}/${Environment}/Pipeline", "PipelineSuccess", { "stat": "Sum", "label": "Success" } ],
+                    [ "${ProjectName}/${Environment}/Pipeline", "PipelineFailure", { "stat": "Sum", "label": "Failures" } ]
                   ]
                 }
               },
@@ -331,14 +332,14 @@ Resources:
                 "type": "metric",
                 "x": 16, "y": 1, "width": 8, "height": 6,
                 "properties": {
-                  "title": "Taux de succes (7 j glissants, %)",
+                  "title": "Success rate (7-day rolling, %)",
                   "view": "singleValue",
                   "region": "${AWS::Region}",
                   "period": 604800,
                   "metrics": [
                     [ "${ProjectName}/${Environment}/Pipeline", "PipelineSuccess", { "stat": "Sum", "id": "m1", "visible": false } ],
                     [ "${ProjectName}/${Environment}/Pipeline", "PipelineFailure", { "stat": "Sum", "id": "m2", "visible": false } ],
-                    [ { "expression": "100*(m1/(m1+m2))", "label": "Taux de succes (%)", "id": "e1" } ]
+                    [ { "expression": "100*(m1/(m1+m2))", "label": "Success rate (%)", "id": "e1" } ]
                   ]
                 }
               },
@@ -346,7 +347,7 @@ Resources:
                 "type": "metric",
                 "x": 0, "y": 7, "width": 8, "height": 6,
                 "properties": {
-                  "title": "CodeBuild — duree des builds (s)",
+                  "title": "CodeBuild — build duration (s)",
                   "view": "timeSeries",
                   "region": "${AWS::Region}",
                   "metrics": [
@@ -358,13 +359,13 @@ Resources:
                 "type": "metric",
                 "x": 8, "y": 7, "width": 8, "height": 6,
                 "properties": {
-                  "title": "CodeBuild — builds reussis / echoues",
+                  "title": "CodeBuild — succeeded / failed builds",
                   "view": "timeSeries",
                   "stacked": true,
                   "region": "${AWS::Region}",
                   "metrics": [
-                    [ "AWS/CodeBuild", "SucceededBuilds", "ProjectName", "${ProjectName}-${Environment}-build", { "stat": "Sum", "label": "Reussis" } ],
-                    [ "AWS/CodeBuild", "FailedBuilds", "ProjectName", "${ProjectName}-${Environment}-build", { "stat": "Sum", "label": "echoues" } ]
+                    [ "AWS/CodeBuild", "SucceededBuilds", "ProjectName", "${ProjectName}-${Environment}-build", { "stat": "Sum", "label": "Succeeded" } ],
+                    [ "AWS/CodeBuild", "FailedBuilds", "ProjectName", "${ProjectName}-${Environment}-build", { "stat": "Sum", "label": "Failed" } ]
                   ]
                 }
               },
@@ -372,17 +373,17 @@ Resources:
                 "type": "metric",
                 "x": 16, "y": 7, "width": 8, "height": 6,
                 "properties": {
-                  "title": "ECS Fargate — CPU / Memoire (%) et nombre de taches",
+                  "title": "ECS Fargate — CPU / Memory (%) and task count",
                   "view": "timeSeries",
                   "region": "${AWS::Region}",
                   "metrics": [
                     [ "AWS/ECS", "CPUUtilization", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "CPU" } ],
-                    [ "AWS/ECS", "MemoryUtilization", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "Memoire" } ],
-                    [ "ECS/ContainerInsights", "RunningTaskCount", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "Taches en cours", "yAxis": "right" } ]
+                    [ "AWS/ECS", "MemoryUtilization", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "Memory" } ],
+                    [ "ECS/ContainerInsights", "RunningTaskCount", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "stat": "Average", "label": "Running tasks", "yAxis": "right" } ]
                   ],
                   "annotations": {
                     "horizontal": [
-                      { "label": "Cible CPU auto scaling (70%)", "value": 70 }
+                      { "label": "Auto scaling CPU target (70%)", "value": 70 }
                     ]
                   }
                 }
@@ -391,12 +392,12 @@ Resources:
                 "type": "metric",
                 "x": 0, "y": 13, "width": 24, "height": 6,
                 "properties": {
-                  "title": "ALB — latence applicative (s) et hôtes sains (target group Blue)",
+                  "title": "ALB — application latency (s) and healthy hosts (Blue target group)",
                   "view": "timeSeries",
                   "region": "${AWS::Region}",
                   "metrics": [
-                    [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${AlbFullName}", { "stat": "Average", "label": "Latence (p50)" } ],
-                    [ "AWS/ApplicationELB", "HealthyHostCount", "LoadBalancer", "${AlbFullName}", "TargetGroup", "${BlueTargetGroupFullName}", { "stat": "Average", "label": "Hôtes sains (Blue)", "yAxis": "right" } ]
+                    [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${AlbFullName}", { "stat": "Average", "label": "Latency (p50)" } ],
+                    [ "AWS/ApplicationELB", "HealthyHostCount", "LoadBalancer", "${AlbFullName}", "TargetGroup", "${BlueTargetGroupFullName}", { "stat": "Average", "label": "Healthy hosts (Blue)", "yAxis": "right" } ]
                   ]
                 }
               }

@@ -9,7 +9,7 @@ Description: >
   dashboard in observability.yml).
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DePLOIEMENT (reference list for the project) :
+# NOTE ON DEPLOYMENT ORDER (reference list for the project):
 #   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
 #   5. codebuild.yaml
 #   6. ecs-cluster.yaml   <- this stack

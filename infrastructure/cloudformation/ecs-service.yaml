@@ -12,7 +12,7 @@ Description: >
     only starts and stops tasks.
 
 # ------------------------------------------------------------------
-# NOTE SUR L'ORDRE DE DePLOIEMENT (see ecs-cluster.yaml) :
+# NOTE ON DEPLOYMENT ORDER (see ecs-cluster.yaml):
 #   ... 8. ecs-task-definition.yaml   9. ecs-service.yaml   <- this stack
 #   10. pipeline.yml   11. ecs-autoscaling.yaml   12. observability.yml
 #
