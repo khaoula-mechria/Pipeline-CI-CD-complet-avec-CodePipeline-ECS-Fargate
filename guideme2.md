@@ -225,13 +225,15 @@ The CDC requires:
 * pushed to ECR;
 * scanned for vulnerabilities.
 
-The repository is `IMMUTABLE` (tags can't be overwritten once pushed). `buildspec.yml` only pushes the commit-SHA tag now — an earlier version also pushed a `latest` tag on every build, which would have been rejected by ECR from the second build onward for that exact reason. Already fixed; nothing to do here.
+The repository is `IMMUTABLE` (tags can't be overwritten once pushed). `buildspec.yml` only pushes the commit-SHA tag on every automated build now — an earlier version also pushed `latest` every time, which ECR would have rejected from the second build onward for that exact reason. That's fixed, but it has one consequence: **something still has to push a `:latest` image once, manually, before the Task Definition/ECS Service stacks (steps 11-12)** — `ecs-task-definition.yaml`'s bootstrap `ContainerImage` parameter defaults to `<repo>:latest` for that very first task, before the pipeline has ever run and produced a real, SHA-tagged revision. Step 6 below does exactly that, once, safely (nothing else will ever try to overwrite that tag again).
 
 ---
 
-# 6. Build and push the Docker image manually (optional sanity check)
+# 6. Build and push the Docker image manually (required once, before step 11)
 
-This step is **not** part of the automated pipeline — CodeBuild does this for you via `task-manager/buildspec.yml` once the CodeBuild stack exists (step 7). Doing it manually once, here, is useful to isolate problems: if this step works, you know the `Dockerfile`, the app, and your ECR permissions are fine, so anything that fails later in CodeBuild is a **pipeline/CodeBuild** problem, not a **Docker/app** problem.
+Unlike the automated build CodeBuild does for you via `task-manager/buildspec.yml` (step 7 onward, one SHA-tagged image per pipeline run), this one-time manual push is **required**: it's the only thing that ever puts a `:latest`-tagged image in ECR, which `ecs-task-definition.yaml`'s bootstrap `ContainerImage` parameter needs by default (see the note in step 5). Skip it only if you plan to pass an explicit `ContainerImage` parameter override to step 11 instead.
+
+It's also useful as a sanity check regardless: if this step works, you know the `Dockerfile`, the app, and your ECR permissions are fine, so anything that fails later in CodeBuild is a **pipeline/CodeBuild** problem, not a **Docker/app** problem.
 
 ```powershell
 $ecrUri = aws cloudformation list-exports `
@@ -252,7 +254,7 @@ cd task-manager
 $imageTag = (git rev-parse --short=8 HEAD)
 Write-Host "Image tag for this manual build -> $imageTag"
 
-docker build -t "${ecrUri}:$imageTag" .
+docker build -t "${ecrUri}:$imageTag" -t "${ecrUri}:latest" .
 
 cd ..
 ```
@@ -263,11 +265,14 @@ Check the image size (target: under 200 MB):
 docker images "${ecrUri}:$imageTag"
 ```
 
-Push it:
+Push both tags:
 
 ```powershell
 docker push "${ecrUri}:$imageTag"
+docker push "${ecrUri}:latest"
 ```
+
+**Push `:latest` here, and only here.** This is the one time it's safe: nothing else in this project ever pushes `:latest` again (buildspec.yml deliberately doesn't, to avoid the `IMMUTABLE` conflict described in step 5), so there's nothing left to collide with it later.
 
 ### Verify
 
