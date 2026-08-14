@@ -138,6 +138,19 @@ Resources:
                   - !ImportValue
                     'Fn::Sub': '${ProjectName}-${Environment}-ecr-arn'
 
+              # buildspec.yml's "aws ecr wait image-scan-complete" call needs
+              # this: when the account's ECR registry uses Enhanced Scanning
+              # (Amazon Inspector v2) rather than Basic Scanning, the waiter
+              # polls scan status via Inspector v2's coverage API under the
+              # hood. inspector2:ListCoverage has no resource-level
+              # permissions (AWS constraint, same as EcrAuth above), so
+              # Resource: "*" is required.
+              - Sid: Inspector2ScanCoverage
+                Effect: Allow
+                Action:
+                  - inspector2:ListCoverage
+                Resource: '*'
+
               # US-05: SNS notification for the scan result (blocking on
               # CRITICAL, informational on HIGH).
               #
