@@ -1104,3 +1104,114 @@ Sans accès AWS, il reste néanmoins des écarts de conformité identifiés par
   CloudFormation échouera sur « already exists » — il faudra le supprimer ou
   l'importer au préalable. Sur un premier déploiement, rien à faire.
   `cfn-lint` propre.
+- 2026-08-14 — **traduction anglaise de tous les commentaires/descriptions
+  CloudFormation**. Les 12 templates étaient en français (à l'exception de
+  quelques fichiers déjà traduits) ; tous les commentaires, `Description:`,
+  et le JSON du dashboard `observability.yml` sont désormais en anglais.
+  Aucune valeur fonctionnelle touchée (noms de ressources, tags, IDs, valeurs
+  de paramètres) ; l'UI de l'application (`task-manager/src/views.js`) reste
+  volontairement en français (contenu utilisateur, pas commentaire de code).
+  Vérifié : `cfn-lint` propre sur les 12 templates après traduction.
+- 2026-08-14 — **CodeBuild bloqué par le gate SAST corrigé, en deux temps**
+  (via GitHub Actions, pas encore via CodeBuild réel — voir plus bas). Le job
+  `SAST (Semgrep)` de `ci.yml` échouait avec 1 finding bloquant :
+  `express-check-csurf-middleware-usage` (règle INFO, mais `--error` fait
+  échouer sur **tout** finding, pas seulement les ERROR). Un premier
+  `nosemgrep` existait déjà sur les routes `/add`/`/toggle`/`/delete`, sans
+  effet : la règle matche en réalité la ligne `const app = express()`, jamais
+  les routes. Déplacer le commentaire à la bonne ligne n'a **pas** suffi non
+  plus au run suivant (vérifié via l'API GitHub Actions, run exécuté contre
+  le bon commit) : le `check_id` réel de la règle
+  (`javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage`,
+  le nom de la règle est dupliqué dans le check_id complet) ne correspondait
+  pas à la chaîne utilisée dans `nosemgrep:`. Confirmé au sol via Semgrep
+  installé sous WSL (Windows ne supporte pas nativement `semgrep-core`) : `0
+  findings` une fois le bon `check_id` utilisé, avec la même invocation
+  `--config auto --error` que `buildspec.yml`/`ci.yml`. Application n'a pas
+  de session/cookie d'authentification : la protection CSRF ne s'applique
+  donc pas ici, d'où la suppression plutôt qu'un ajout de `csurf`.
+- 2026-08-14 — **permission S3 manquante sur le rôle CodeBuild, trouvée et
+  corrigée**. `CodeBuildServiceRole` n'avait aucune permission S3, alors
+  qu'AWS exige que le rôle du projet CodeBuild lui-même (pas seulement
+  `CodePipelineServiceRole`) puisse lire/écrire le bucket d'artefacts S3 de
+  CodePipeline quand ce projet tourne comme action Build d'un pipeline. Ce
+  besoin avait été contourné manuellement (policy attachée à la main dans la
+  console AWS, avec l'ID de compte réel en clair — seul endroit du dépôt à le
+  faire) au lieu d'être corrigé dans l'IaC :
+  `infrastructure/cloudformation/codebuild-artifact-policy.json`, non
+  référencé par aucun template. Ajouté le même statement (Sid
+  `PipelineArtifactsBucketAccess`, `s3:GetObject`/`GetObjectVersion`/
+  `PutObject`/`GetBucketVersioning`) directement dans `codebuild.yaml`, avec
+  la convention `${AWS::AccountId}` déjà utilisée pour ce même bucket dans
+  `iam.yaml`, puis supprimé le fichier JSON orphelin.
+- 2026-08-14 — **application `task-manager` enrichie** (édition, échéances,
+  recherche, filtres, tri). `tasks.js.list()` gagne des options optionnelles
+  (`query`/`status`/`priority`/`sortBy`) en gardant son comportement sans
+  argument identique à avant ; une valeur de filtre/tri inconnue dégrade
+  gracieusement vers « pas de filtre » plutôt que de tout masquer ou de
+  planter. Nouvelle route `POST /edit/:id`. Formulaire d'édition par tâche
+  dans un `<details>` natif (aucun JS ajouté). Aucune nouvelle dépendance
+  npm. 61 tests (contre 29), couverture 99,3 %/99,1 % (lignes/branches).
+  Vérifié : `npm test` vert, Semgrep (WSL) toujours à 0 finding après ces
+  ajouts, et un test manuel via `node server.js` + `curl` exerçant
+  add/edit/search/sort/filter directement contre le serveur.
+- 2026-08-14 — **audit complet du dépôt, sur demande explicite**, en 5 revues
+  parallèles ciblées (IAM/sécurité, conformité CDC ligne par ligne,
+  mécanique du pipeline, scripts LocalStack, observabilité/coûts). Chaque
+  piste a été revérifiée directement avant correction (pas de correction sur
+  la seule foi du rapport d'audit). Trois bugs auraient chacun fait échouer
+  un déploiement réel de bout en bout, même le tout premier, et n'étaient
+  détectables ni par `cfn-lint` ni par LocalStack :
+  - `pipeline.yml` : `AppSpecTemplatePath: appspec.yaml` pointait vers la
+    racine de l'artefact `SourceArtifact` (qui préserve l'arborescence
+    complète du dépôt, contrairement à `BuildArtifact` aplati par
+    `discard-paths`), alors que le fichier vit dans `task-manager/`. Même
+    catégorie de bug que celui déjà trouvé et corrigé pour `BuildSpec` dans
+    `codebuild.yaml`, jamais reproduit sur ce chemin-ci. Corrigé en
+    `task-manager/appspec.yaml`.
+  - `PipelineNotificationsTopicPolicy` n'autorisait que
+    `events.amazonaws.com` à publier. Les 4 alarmes CloudWatch
+    (`observability.yml`, `ecs-autoscaling.yaml`) publient sur ce même topic
+    en tant que principal de service `cloudwatch.amazonaws.com`, qui n'avait
+    aucune autorisation : chaque alarme aurait changé d'état correctement,
+    mais sa notification SNS/email aurait été rejetée silencieusement
+    (`AccessDenied` interne, rien de visible côté pipeline). Statement ajouté,
+    scopé par `aws:SourceOwner`.
+  - `CodeBuildServiceRole` n'avait aucune permission
+    `codebuild:CreateReportGroup`/`CreateReport`/`UpdateReport`/
+    `BatchPutTestCases`/`BatchPutCodeCoverages`, alors que `buildspec.yml`
+    déclare un bloc `reports:` (unit-tests + code-coverage). Le build aurait
+    échoué au moment de la remontée des rapports, après que tests, SAST,
+    build Docker et scan ECR aient déjà réussi.
+
+  Corrigé au passage : le conflit `ECR IMMUTABLE` + tag `latest` (identifié
+  le 2026-07-28, jamais tranché) — `buildspec.yml` ne pousse plus `latest`
+  sur les builds automatisés (seul `imageDetail.json`, qui référence
+  toujours le tag SHA, compte pour le déploiement). **Régression retrouvée en
+  relisant cette section de `so-far.md` avant d'écrire l'entrée du jour** :
+  `ecs-task-definition.yaml` utilise `<repo>:latest` par défaut pour le
+  **bootstrap** (avant que le pipeline n'ait jamais tourné) — en retirant
+  `latest` de partout, plus rien ne l'aurait jamais poussé. Solution retenue
+  parmi les 3 déjà envisagées le 2026-07-28 : pousser `latest` une seule
+  fois, à la main (guide `guideme2.md`, étape 6), puisque c'est le seul
+  moment où c'est sans risque (rien d'autre ne le pousse plus jamais après).
+
+  Trouvés et corrigés également : les notes « ordre de déploiement » de
+  `iam.yaml`/`secrets-manager.yaml`/`ecs-cluster.yaml`/`pipeline.yml`
+  décrivaient encore l'ancien ordre erroné (IAM en position 2, avant
+  secrets/ecr/codebuild) ; le tableau principal d'`infrastructure/README.md`
+  listait ce même ordre erroné, en contradiction avec son propre encadré
+  « ordre non négociable » trois lignes plus bas ; un commentaire de
+  `pipeline.yml` affirmait à tort que les branches `feature/*` sont couvertes
+  par le webhook CodeBuild (qui ne se déclenche que sur `main`/`develop` —
+  c'est en réalité `.github/workflows/ci.yml` qui les couvre) ; et
+  `test5-pipeline.sh` (validation locale de `pipeline.yml`) n'excluait pas
+  `AlbFullName`/`BlueTargetGroupFullName` de sa copie de test alors qu'il ne
+  déploie jamais `alb.yaml` — écart avec `test6-observability.sh`, qui les
+  exclut déjà correctement.
+
+  Vérifié après CHAQUE correction (pas seulement à la fin) : `cfn-lint`
+  propre sur les 12 templates, script de validation YAML/CFN-aware repassé,
+  graphe complet des exports/imports entre stacks recalculé sans référence
+  pendante, `npm test` (61 tests, ~99 %), et Semgrep (WSL) à 0 finding après
+  la modification de `buildspec.yml`.
