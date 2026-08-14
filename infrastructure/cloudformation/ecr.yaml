@@ -120,16 +120,16 @@ Resources:
       # (consistent with DeletionPolicy: Retain).
       EmptyOnDelete: false
 
-      # IMMUTABLE = once a tag is pushed, it can no longer be overwritten.
-      # CI/CD best practice: prevents a SHA from being silently replaced
-      # by a different image later.
-      #
-      # /!\ IMPACT ON THE PIPELINE: with IMMUTABLE, a second
-      # "docker push <repo>:latest" fails with ImageTagAlreadyExistsException.
-      # The buildspec must therefore tag by commit SHA / build number
-      # (e.g. :$CODEBUILD_RESOLVED_SOURCE_VERSION) and NOT republish "latest".
-      # If a moving "latest" tag is indispensable, switch back to MUTABLE.
-      ImageTagMutability: IMMUTABLE
+      # MUTABLE: switched back from IMMUTABLE on 2026-08-14. IMMUTABLE was
+      # meant to stop a commit-SHA tag from being silently replaced by
+      # different content, but it collides with a known, unfixed BuildKit/ECR
+      # interaction (moby/buildkit#3776, closed "not planned"): docker push
+      # can register the tag successfully server-side and still exit non-zero
+      # claiming the tag already exists, failing builds that actually
+      # succeeded. Since IMAGE_TAG is always the commit SHA (buildspec.yml),
+      # traceability doesn't depend on immutability -- a given SHA is only
+      # ever pushed with the same content.
+      ImageTagMutability: MUTABLE
 
       # Acceptance criterion: scan on push enabled.
       # ECR automatically runs a vulnerability scan (Basic Scanning,

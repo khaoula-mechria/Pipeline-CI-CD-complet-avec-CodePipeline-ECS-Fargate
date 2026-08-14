@@ -68,13 +68,11 @@ phases:
       # Le contexte de build est task-manager/ : c'est la que vivent le
       # Dockerfile multi-stage, package.json et le code applicatif.
       - cd "$CODEBUILD_SRC_DIR/$APP_DIR"
-      # ONLY the SHA tag: ecr.yaml sets ImageTagMutability: IMMUTABLE, and
-      # imageDetail.json below (post_build) deploys by $IMAGE_TAG exclusively
-      # -- a "latest" tag would be purely decorative, yet pushing the SAME
-      # "latest" tag on every build fails from the second build onward
-      # (ImageTagAlreadyExistsException) since immutable tags can't be
-      # overwritten. Removed rather than switching the repo to MUTABLE, which
-      # would trade away the traceability IMMUTABLE was chosen for.
+      # ONLY the SHA tag: imageDetail.json below (post_build) deploys by
+      # $IMAGE_TAG exclusively -- a "latest" tag would be purely decorative,
+      # so it's not pushed at all. (ecr.yaml's repo is MUTABLE as of
+      # 2026-08-14 -- see that file for why -- but a moving "latest" tag
+      # still wouldn't add any value here.)
       - docker build -t "$ECR_REPOSITORY_URI:$IMAGE_TAG" .
       - echo "Taille de l'image generee (cible < 200 Mo) :"
       - docker images "$ECR_REPOSITORY_URI:$IMAGE_TAG"
