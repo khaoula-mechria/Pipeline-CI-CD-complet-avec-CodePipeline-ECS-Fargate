@@ -30,9 +30,24 @@ FROM node:20-alpine AS production
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Ne réinstaller que les dépendances de production
+# Applique les correctifs déjà disponibles dans les dépôts Alpine pour les
+# paquets OS (ex. openssl) sans attendre qu'une nouvelle version de l'image
+# de base node:20-alpine soit publiée en amont.
+RUN apk upgrade --no-cache
+
+# Ne réinstaller que les dépendances de production, puis supprimer npm/npx/
+# corepack : ce sont des outils de build (jamais invoqués en production, le
+# conteneur ne fait que "node server.js"), mais leurs propres dépendances
+# embarquées (glob, minimatch, tar, etc., globalement installées sous
+# /usr/local/lib/node_modules/) sont scannées comme du code applicatif et
+# faisaient remonter des CVE (dont une CRITICAL) qui n'ont jamais été
+# exécutables ici. Les supprimer élimine ces findings sans toucher aux
+# dépendances réelles de l'application (task-manager/package.json), qui
+# restent, elles, intactes et scannées normalement.
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+              /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 # Récupérer uniquement le code applicatif depuis le stage "build"
 # (adapter le chemin "src"/"dist" selon la structure réelle du projet)
