@@ -14,6 +14,12 @@ const express = require('express');
 const tasks = require('./tasks');
 const { renderIndex } = require('./views');
 
+// Semgrep's CSRF-middleware audit rule (express-check-csurf-middleware-usage)
+// always anchors on this express() initialization line, never on individual
+// routes. This app has no session or auth cookie for a forged cross-site
+// request to ride on, so CSRF protection does not apply; see the POST routes
+// below for the state-changing actions this would otherwise flag.
+// nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage
 const app = express();
 
 // express.json pour l'API, express.urlencoded pour les formulaires HTML
@@ -40,11 +46,6 @@ app.get('/', (_request, response) => {
   response.type('html').send(renderIndex(tasks.list()));
 });
 
-// Semgrep can suggest CSRF middleware for state-changing routes in Express.
-// Here, there is no cookie/session authentication context to protect: the app
-// does not use auth cookies, sessions, or bearer identity for these actions.
-// This makes CSRF protection non-applicable for the current architecture.
-// nosemgrep
 app.post('/add', (request, response) => {
   tasks.add({
     title: request.body.title,
@@ -55,14 +56,12 @@ app.post('/add', (request, response) => {
   response.redirect('/');
 });
 
-// nosemgrep
 app.post('/toggle/:id', (request, response) => {
   tasks.toggle(request.params.id);
 
   response.redirect('/');
 });
 
-// nosemgrep
 app.post('/delete/:id', (request, response) => {
   tasks.remove(request.params.id);
 
