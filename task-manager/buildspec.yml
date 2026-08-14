@@ -125,26 +125,63 @@ phases:
         ECR_REPO_NAME="${ECR_REPOSITORY_URI##*/}"
         IMAGE_REF="$ECR_REPOSITORY_URI:$IMAGE_TAG"
 
-        # ScanOnPush lance le scan tout seul, mais de façon asynchrone : sans
-        # cette attente, describe-image-scan-findings renvoie un scan encore
-        # "IN_PROGRESS" et donc zero finding — le gate passerait a tort.
-        if ! aws ecr wait image-scan-complete \
-              --repository-name "$ECR_REPO_NAME" \
-              --image-id "imageTag=$IMAGE_TAG" 2>scan-wait.err; then
-          echo " Le scan ECR ne s'est pas termine correctement :"
+        # Le scan est asynchrone : sans attente, describe-image-scan-findings
+        # renvoie zero finding et le gate passerait a tort.
+        #
+        # PAS "aws ecr wait image-scan-complete" ici (c'etait le cas avant le
+        # 2026-08-14, et ça faisait echouer tous les builds) : ce waiter attend
+        # le statut COMPLETE, propre au Basic Scanning. Le registre de ce
+        # compte est en Enhanced Scanning (Amazon Inspector v2, mode continu),
+        # qui reste indefiniment au statut ACTIVE ("Continuous scan is selected
+        # for image") et renvoie ScanNotFoundException pendant les premieres
+        # minutes suivant le push — que le waiter traite comme une erreur
+        # fatale. Ce polling accepte donc ACTIVE **et** COMPLETE (les deux
+        # modes de scan restent supportes), et tolere ScanNotFoundException le
+        # temps qu'Inspector ingere l'image.
+        #
+        # imageScanCompletedAt est exige en plus du statut : en mode continu,
+        # ACTIVE apparaît des qu'Inspector connaît l'image, donc potentiellement
+        # AVANT que les findings soient remontes — se fier au seul statut
+        # rouvrirait la fenêtre "zero finding a tort" que cette attente existe
+        # justement pour fermer.
+        SCAN_PRET=""
+        for TENTATIVE in $(seq 1 30); do
+          if aws ecr describe-image-scan-findings \
+                --repository-name "$ECR_REPO_NAME" \
+                --image-id "imageTag=$IMAGE_TAG" \
+                > ecr-scan-findings.json 2>scan-wait.err; then
+            ETAT_SCAN=$(node -e "
+              const scan = require('./ecr-scan-findings.json');
+              const statut = (scan.imageScanStatus && scan.imageScanStatus.status) || 'UNKNOWN';
+              const findings = scan.imageScanFindings || {};
+              console.log(statut + ':' + (findings.imageScanCompletedAt ? 'PRET' : 'ATTENTE'));
+            ")
+            echo "  tentative $TENTATIVE : $ETAT_SCAN"
+            case "$ETAT_SCAN" in
+              ACTIVE:PRET|COMPLETE:PRET)
+                SCAN_PRET=1
+                break
+                ;;
+              FAILED:*)
+                echo " Le scan ECR a echoue cote AWS :"
+                cat ecr-scan-findings.json
+                exit 1
+                ;;
+            esac
+          else
+            # ScanNotFoundException tant qu'Inspector n'a pas ingere l'image.
+            echo "  tentative $TENTATIVE : resultats pas encore disponibles"
+          fi
+          sleep 10
+        done
+
+        if [ -z "$SCAN_PRET" ]; then
+          echo " Aucun resultat de scan exploitable apres 5 minutes :"
           cat scan-wait.err
-          aws ecr describe-image-scan-findings \
-            --repository-name "$ECR_REPO_NAME" \
-            --image-id "imageTag=$IMAGE_TAG" \
-            --query 'imageScanStatus' --output json || true
           echo "   Sans resultat de scan, l'absence de vulnerabilite CRITICAL ne"
           echo "   peut pas être garantie -> arrêt du build (fail-safe US-05)."
           exit 1
         fi
-
-        aws ecr describe-image-scan-findings \
-          --repository-name "$ECR_REPO_NAME" \
-          --image-id "imageTag=$IMAGE_TAG" > ecr-scan-findings.json
 
         # findingSeverityCounts n'existe pas du tout quand aucune vulnerabilite
         # n'est trouvee : chaque compteur retombe donc explicitement sur 0.
