@@ -229,7 +229,8 @@ for name in REMOVE_RESOURCES:
 
 # Outputs retirés : référencent des ressources qui viennent d'être retirées.
 REMOVE_OUTPUTS = [
-    "LoadBalancerDnsName", "EcsClusterName", "EcsServiceName",
+    "LoadBalancerDnsName", "AlbFullName", "BlueTargetGroupFullName",
+    "EcsClusterName", "EcsServiceName",
     "CodePipelineName", "CodeDeployApplicationName",
     "CodeDeployDeploymentGroupName",
 ]
