@@ -46,6 +46,13 @@ des ARN y circulent.
 policy Target Tracking à 70 % de CPU, avec 2 alarmes CloudWatch et le nombre de tâches désormais visible sur
 le dashboard.
 
+✅ **Un audit complet du dépôt a été mené le 2026-08-14** (5 revues ciblées : IAM/sécurité, conformité CDC,
+mécanique du pipeline, scripts LocalStack, observabilité/coûts, chaque piste revérifiée avant correction) et
+a trouvé 3 bugs qui auraient chacun fait échouer un déploiement réel de bout en bout, même le tout premier,
+sans qu'aucun ne soit détectable par `cfn-lint` ni par LocalStack : le chemin d'`appspec.yaml` dans
+`pipeline.yml`, la policy SNS ne laissant pas passer les alarmes CloudWatch, et des permissions IAM
+manquantes pour les report groups CodeBuild. Tous corrigés — voir « Historique de ce rapport ».
+
 **Plus aucune exigence du cahier des charges n'est totalement absente de l'implémentation.** Ce qui reste
 relève soit d'un déploiement AWS réel (le point bloquant ci-dessus), soit d'écarts mineurs listés en fin de
 document.
@@ -85,7 +92,7 @@ document.
 |---|---|---|---|
 | Dockerfile multi-stage, image finale < 200 Mo | ✅ | `task-manager/Dockerfile` | Multi-stage (`build` → `production`), image de prod sans devDependencies, utilisateur non-root, `HEALTHCHECK`. **Taille réellement mesurée : 48 Mo**, soit très en dessous de la cible de 200 Mo (première mesure effective du projet). Le doublon single-stage de la racine a été supprimé. |
 | Tests unitaires ≥80% de couverture, rapport JUnit exporté | ✅ | `task-manager/tests/` (3 fichiers), `task-manager/jest.config.js`, `reports/junit.xml`, `coverage/` | 29 tests (Jest + Supertest) couvrant les routes HTML, l'API, le store et le rendu : **100 % de couverture** (lignes, branches, fonctions) sur les 3 modules de `src/`, c'est-à-dire sur l'application réellement déployée. Trois garde-fous cumulés : `collectCoverageFrom: ['src/**/*.js']` (un module non testé fait baisser la couverture, le gate n'est pas contournable), `coverageThreshold` global à 80 % dans Jest (`npm test` échoue de lui-même, y compris en local), et une revérification explicite du seuil dans **les deux CI** qui affiche la valeur mesurée. Rapports produits : JUnit XML, couverture **HTML** (`lcov-report/`) et couverture **XML Cobertura**, publiés en artefacts par GitHub Actions et par CodeBuild. **Gate vérifié empiriquement** : avec un module non couvert injecté, la couverture tombe à 61,81 %, Jest sort en erreur et le contrôle shell des deux CI bloque également. |
-| Scan SAST bloque le pipeline si vulnérabilités critiques | ⚠️ | `task-manager/buildspec.yml` (phase `pre_build`), `.github/workflows/ci.yml` | Semgrep (`--config auto --error`) avec `exit 1` sur détection, désormais présent **dans les deux CI** avec la même commande (avant : uniquement CodeBuild). Reste ⚠️ pour une seule raison : le gate n'a toujours pas été observé bloquant un build de bout en bout sur un vrai compte AWS. |
+| Scan SAST bloque le pipeline si vulnérabilités critiques | ✅ | `task-manager/buildspec.yml` (phase `pre_build`), `.github/workflows/ci.yml` | Semgrep (`--config auto --error`) avec `exit 1` sur détection, présent **dans les deux CI** avec la même commande. **Vérifié empiriquement dans les deux sens sur GitHub Actions (2026-08-14)** : un vrai finding (`express-check-csurf-middleware-usage`) a bloqué le job pendant plusieurs runs consécutifs (confirmé via l'API GitHub Actions, run exécuté contre le commit exact), puis le job est repassé au vert une fois la suppression correctement ciblée (le `check_id` réel de la règle diffère de celui affiché sur la page semgrep.dev — confirmé en installant Semgrep sous WSL, faute de support natif Windows). Reste à observer sur un vrai build **CodeBuild** (même commande, jamais encore exécutée sur un vrai compte AWS). |
 | Image taguée avec le SHA du commit, poussée sur ECR | ✅ | `task-manager/buildspec.yml` | `IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" \| cut -c1-8)`, puis `docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"`. Logique correcte et lisible, jamais exécutée sur un vrai compte AWS. |
 
 ---
@@ -95,7 +102,7 @@ document.
 | Règle du CDC | Statut | Preuve | Commentaire |
 |---|---|---|---|
 | Traffic shift progressif 10% → 50% → 100% sur 10 min | ⚠️ | `pipeline.yml` (`CodeDeployDeploymentGroup`) | `DeploymentConfigName: CodeDeployDefault.ECSLinear10PercentEvery1Minute` (rampe linéaire 10%/min) utilisé comme équivalent AWS prédéfini le plus proche — le commentaire du template reconnaît lui-même qu'*« AWS ne propose pas de config prédéfinie avec paliers 10/50/100 exacts »*. Aucune `AWS::CodeDeploy::DeploymentConfig` personnalisée n'a été créée pour coller exactement au CDC. |
-| Rollback automatique en <3 min sur échec des health checks | ⚠️ | `pipeline.yml` (`AutoRollbackConfiguration: {Enabled: true, Events: [DEPLOYMENT_FAILURE]}`) | Le rollback automatique est bien configuré, mais déclenché uniquement par l'évènement `DEPLOYMENT_FAILURE` de CodeDeploy — aucune alarme CloudWatch dédiée ne pilote ce rollback, et aucun test ne démontre le délai de 3 minutes (seuls les paramètres de health check ALB — intervalle 15s, seuil 3 — donnent un ordre de grandeur théorique de ~45s pour détecter l'échec, sans preuve empirique de bout en bout). |
+| Rollback automatique en <3 min sur échec des health checks | ⚠️ | `pipeline.yml` (`AutoRollbackConfiguration: {Enabled: true, Events: [DEPLOYMENT_FAILURE]}`) | Le rollback automatique est bien configuré, mais déclenché uniquement par l'évènement `DEPLOYMENT_FAILURE` de CodeDeploy — aucune alarme CloudWatch dédiée ne pilote ce rollback, et aucun test ne démontre le délai de 3 minutes (seuls les paramètres de health check ALB — intervalle 15s, seuil 3 — donnent un ordre de grandeur théorique de ~45s pour détecter l'échec, sans preuve empirique de bout en bout). **Bug trouvé et corrigé le 2026-08-14, en amont de ce mécanisme** : `AppSpecTemplatePath: appspec.yaml` pointait vers la racine de `SourceArtifact` au lieu de `task-manager/appspec.yaml` — sans correction, le stage Deploy aurait échoué à trouver le fichier avant même de pouvoir démarrer un déploiement Blue/Green, quel qu'il soit. |
 | Secrets injectés via Secrets Manager, jamais en clair | ✅ | `secrets-manager.yaml`, `ecs-task-definition.yaml` (bloc `Secrets`), `taskdef.template.json` (bloc `secrets`), `iam.yaml` (`ReadAppSecrets`) | 2 secrets créés (`<projet>/<env>/db` en JSON `username`+`password`, `<projet>/<env>/api-key`), **valeurs générées par AWS** via `GenerateSecretString` : aucune donnée sensible dans le dépôt ni dans les paramètres CloudFormation. Injectés en `DB_USERNAME`/`DB_PASSWORD`/`API_KEY` dans les **deux** task definitions — la CloudFormation (bootstrap) et `taskdef.template.json` (celle réellement déployée à chaque exécution du pipeline). Seuls des **ARN** circulent (`secrets-manager.yaml` → variables d'environnement `codebuild.yaml` → `taskdef.json`) ; un ARN n'est pas une donnée sensible, et `describe-task-definition` ne renvoie jamais la valeur, contrairement au bloc `Environment`. Validé par `test8-secrets.sh`. Reste à vérifier sur un vrai compte AWS : l'injection effective par l'agent ECS (service `ecs` Pro-only sur LocalStack). |
 | Le nombre de tâches Fargate scale automatiquement selon le CPU | ✅ | `ecs-autoscaling.yaml` | `AWS::ApplicationAutoScaling::ScalableTarget` sur `ecs:service:DesiredCount` (2 à 6 tâches) + `ScalingPolicy` de type **Target Tracking** sur la métrique prédéfinie `ECSServiceAverageCPUUtilization`, **cible 70 %**, `DisableScaleIn: false` (l'énoncé demande « augmente ou diminue »). Cooldowns asymétriques : 60 s en scale-out, 300 s en scale-in pour éviter le battement. 2 alarmes CloudWatch d'observabilité notifient le topic SNS (CPU soutenu > 85 %, capacité max atteinte) — elles ne pilotent pas le scaling, Target Tracking gérant ses propres alarmes internes. Le dashboard affiche `RunningTaskCount` avec une annotation à 70 %, ce qui rend le scaling **visible**. Validé par `test9-autoscaling.sh` (22 vérifications structurelles). Reste à vérifier sur un vrai compte AWS : le scaling effectif sous charge. |
 
@@ -108,7 +115,7 @@ document.
 | Notification SNS à chaque changement d'état (succès, échec, approval pending) | ⚠️ | `pipeline.yml` (`PipelineNotificationsTopic`, `PipelineStateChangeRule`) | La règle EventBridge couvre `STARTED, SUCCEEDED, FAILED, RESUMED, CANCELED, SUPERSEDED`. Mais **aucun stage `ManualApproval` n'existe dans le pipeline** (seulement Source → Build → Deploy) — l'état « approval pending » n'a donc structurellement rien à notifier. `iam.yaml` contient une permission `sns:Publish` explicitement commentée comme réservée à ce futur stage, confirmant que c'est un manque connu, pas un oubli. Slack (mentionné comme optionnel dans le CDC) n'est pas implémenté. |
 | Métriques clés exposées sur un dashboard CloudWatch | ✅ | `observability.yml` (`PipelineDashboard`, 7 widgets) | Durée de pipeline, taux de succès 7 jours glissants, latence ALB (`TargetResponseTime`), CPU/mémoire ECS, métriques CodeBuild — correspond bien à l'exigence. Alimenté par une Lambda de métriques custom car CodePipeline ne publie pas nativement ces métriques. |
 | Logs centralisés dans CloudWatch Logs, rétention 30 jours | ✅ | `ecs-task-definition.yaml` (`EcsLogGroup`), `codebuild.yaml` (`BuildLogGroup`), `observability.yml` (`MetricsPublisherLogGroup`) | Les trois log groups déclarés comme ressources CloudFormation portent `RetentionInDays: 30`. Le log group CodeBuild, qui manquait, est désormais **créé explicitement** et référencé par `LogsConfig.CloudWatchLogs.GroupName: !Ref BuildLogGroup` — laissé à la création implicite par CodeBuild, il aurait eu une rétention « Never expire ». `VpcFlowLogsGroup` reste paramétrable (`FlowLogsRetentionDays`) et désactivé par défaut. |
-| Alarme si la durée du pipeline dépasse 15 minutes | ✅ | `observability.yml` (`PipelineDurationAlarm`, `Threshold: 900`, commentaire citant explicitement le CDC) | Correspondance exacte et directe avec l'exigence. |
+| Alarme si la durée du pipeline dépasse 15 minutes | ✅ | `observability.yml` (`PipelineDurationAlarm`, `Threshold: 900`, commentaire citant explicitement le CDC) | Correspondance exacte et directe avec l'exigence. **Bug trouvé et corrigé le 2026-08-14** : la policy du topic SNS (`pipeline.yml`) n'autorisait à publier que le principal `events.amazonaws.com` (EventBridge) ; les 4 alarmes CloudWatch de ce template et de `ecs-autoscaling.yaml` publient sous le principal `cloudwatch.amazonaws.com`, qui n'avait aucune autorisation. Conséquence si non corrigé : l'alarme aurait bien changé d'état (visible dans la console), mais sa notification SNS/email aurait été rejetée silencieusement — rien de visible côté pipeline pour le signaler. Statement ajouté à `PipelineNotificationsTopicPolicy`, scopé par `aws:SourceOwner`. |
 
 ---
 
@@ -329,6 +336,52 @@ Vérification : la logique de décision a été rejouée sur 4 payloads représe
 absent. Les 4 se comportent conformément à US-05 (respectivement : passe sans notification, passe avec
 notification, bloque avec notification, passe sans erreur malgré la structure vide). `cfn-lint` propre sur
 `codebuild.yaml`, YAML du buildspec valide.
+
+---
+
+**2026-08-14 — traduction anglaise de l'IaC, enrichissement applicatif, et audit complet du dépôt.**
+
+Tous les commentaires/descriptions des 12 templates CloudFormation sont passés du français à l'anglais
+(aucune valeur fonctionnelle touchée) ; l'UI de l'application reste en français (contenu utilisateur, pas
+documentation technique). L'application `task-manager` a gagné l'édition de tâches, des échéances
+optionnelles, la recherche, le filtrage et le tri — toujours en mémoire, zéro nouvelle dépendance, 61 tests
+(contre 29) pour une couverture de 99,3 %/99,1 % (lignes/branches).
+
+Le gate SAST, qui bloquait le job `SAST (Semgrep)` de `ci.yml` sur un finding
+`express-check-csurf-middleware-usage`, a été corrigé en deux temps : un premier `nosemgrep` mal placé (sur
+les routes plutôt que sur `const app = express()`, la ligne que la règle matche réellement) n'a rien changé
+; un second essai avec la bonne ligne mais un `check_id` incomplet non plus (`check_id` réel confirmé à 0
+faux négatif via Semgrep installé sous WSL, faute de support natif Windows — le nom de la règle est dupliqué
+dans le `check_id` complet, ce qui n'apparaît pas sur sa page semgrep.dev). Les deux échecs ont été observés
+empiriquement via l'API GitHub Actions (run exécuté contre le commit exact), pas seulement supposés.
+
+L'audit complet (5 revues ciblées, chaque piste revérifiée avant correction) a trouvé et corrigé :
+
+| Bug | Conséquence s'il n'avait pas été corrigé |
+|---|---|
+| `pipeline.yml` : `AppSpecTemplatePath: appspec.yaml` résolu depuis la racine de `SourceArtifact`, alors que le fichier est dans `task-manager/` (même catégorie que le bug `BuildSpec` déjà corrigé pour `codebuild.yaml`, jamais reproduit ici) | Le stage Deploy aurait échoué à trouver l'AppSpec dès le premier déploiement Blue/Green, après que Source et Build aient déjà réussi |
+| `PipelineNotificationsTopicPolicy` n'autorisait que `events.amazonaws.com` à publier | Les 4 alarmes CloudWatch auraient changé d'état correctement, mais leur notification SNS/email aurait été rejetée silencieusement — rien de visible côté pipeline |
+| `CodeBuildServiceRole` sans permissions `codebuild:*ReportGroup*`/`*Report*` alors que `buildspec.yml` déclare un bloc `reports:` | Le build aurait échoué à la remontée des rapports, après que tests, SAST, build Docker et scan ECR aient déjà réussi |
+| Rôle CodeBuild sans permission S3 sur le bucket d'artefacts CodePipeline (nécessaire quand ce projet tourne comme action Build d'un pipeline) | Contournée jusqu'ici par une policy attachée à la main dans la console AWS (avec l'ID de compte réel en clair — seul endroit du dépôt à le faire), non reproductible depuis un déploiement CloudFormation propre |
+
+Corrigé au passage, sans lien avec un déploiement réel mais trouvé en cours de revue : les notes « ordre de
+déploiement » de 4 templates décrivaient encore l'ancien ordre erroné (IAM avant secrets/ecr/codebuild), de
+même que le tableau principal d'`infrastructure/README.md` — en contradiction avec l'encadré juste en
+dessous, qui donnait déjà le bon ordre ; un commentaire de `pipeline.yml` attribuait à tort la couverture
+des branches `feature/*` au webhook CodeBuild (qui ne couvre que `main`/`develop` — c'est
+`.github/workflows/ci.yml` qui s'en charge) ; `test5-pipeline.sh` omettait 2 outputs à exclure de sa copie
+de test de `pipeline.yml`.
+
+Le conflit `ECR IMMUTABLE` + tag `latest` (identifié le 2026-07-28, jamais tranché entre les 3 options alors
+envisagées) est résolu : `buildspec.yml` ne pousse plus `latest` sur les builds automatisés. Une régression a
+été détectée et corrigée avant d'être commise dans ce rapport : `ecs-task-definition.yaml` dépend de
+`<repo>:latest` pour son image de bootstrap (avant que le pipeline n'ait jamais tourné) — un premier correctif
+avait supprimé `latest` de partout, cassant ce chemin. Solution retenue : le pousser une seule fois, à la
+main, dans le guide de déploiement (`guideme2.md`), le seul moment où c'est sans risque.
+
+Vérifications effectuées après chaque correction : `cfn-lint` propre sur les 12 templates, graphe complet des
+exports/imports entre stacks recalculé sans référence pendante, `npm test` (61 tests, ~99 %), et Semgrep
+(WSL) à 0 finding après modification de `buildspec.yml`.
 
 ---
 
