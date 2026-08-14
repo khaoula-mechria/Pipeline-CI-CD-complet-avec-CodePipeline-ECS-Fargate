@@ -958,6 +958,20 @@ aws ec2 delete-vpc-endpoints --region eu-west-2 --vpc-endpoint-ids <id-from-abov
 
 Wait ~1-2 minutes for the ENIs to detach, then re-run the `delete-stack` / `wait stack-delete-complete` pair from above for `taskmanager-dev-vpc`.
 
+**If it then fails a second time, on the `Vpc` resource itself** ("has dependencies and cannot be deleted"), check for a leftover **GuardDuty-managed security group** — GuardDuty creates one alongside its VPC endpoint (named `GuardDutyManagedSecurityGroup-<vpc-id>`), and AWS won't delete a VPC while any non-default security group still exists in it, even an unattached one:
+
+```powershell
+aws ec2 describe-security-groups --region eu-west-2 `
+  --filters "Name=vpc-id,Values=<taskmanager-vpc-id>" `
+  --query "SecurityGroups[?GroupName!='default'].{Id:GroupId,Name:GroupName}" --output table
+```
+
+```powershell
+aws ec2 delete-security-group --region eu-west-2 --group-id <id-from-above>
+```
+
+Then retry `delete-stack` / `wait stack-delete-complete` once more.
+
 **Caution — don't touch VPCs you don't recognize.** While hunting this endpoint, it's easy to `describe-vpc-endpoints`/`describe-vpcs` and see *other* VPCs in the account with a similar `10.0.0.0/16` CIDR. That CIDR match is a coincidence, not a sign they're related to this project — check each VPC's `Name` tag before deleting anything on it. This account has at least one unrelated VPC (tagged `smartovate-cicd-vpc`) that must be left alone.
 
 ---
