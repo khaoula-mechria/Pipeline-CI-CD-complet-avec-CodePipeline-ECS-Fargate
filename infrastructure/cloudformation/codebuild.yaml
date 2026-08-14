@@ -73,6 +73,24 @@ Resources:
             Statement:
 
               # Write build logs to CloudWatch Logs
+              # buildspec.yml declares a `reports:` block (unit-tests,
+              # code-coverage). CodeBuild auto-creates a report group per
+              # entry, named "<project-name>-<report-block-name>", and needs
+              # its OWN role's permission to create/update it and upload
+              # results -- without this, the build fails at report-processing
+              # time even after every buildspec phase (tests, SAST, Docker
+              # push, scan) already succeeded.
+              - Sid: TestReportGroups
+                Effect: Allow
+                Action:
+                  - codebuild:CreateReportGroup
+                  - codebuild:CreateReport
+                  - codebuild:UpdateReport
+                  - codebuild:BatchPutTestCases
+                  - codebuild:BatchPutCodeCoverages
+                Resource:
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/${ProjectName}-${Environment}-build-*'
+
               - Sid: CloudWatchLogsAccess
                 Effect: Allow
                 Action:
