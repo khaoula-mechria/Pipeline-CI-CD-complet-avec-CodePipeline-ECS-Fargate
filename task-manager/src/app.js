@@ -19,7 +19,7 @@ const { renderIndex } = require('./views');
 // routes. This app has no session or auth cookie for a forged cross-site
 // request to ride on, so CSRF protection does not apply; see the POST routes
 // below for the state-changing actions this would otherwise flag.
-// nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage
+// nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage
 const app = express();
 
 // express.json pour l'API, express.urlencoded pour les formulaires HTML
