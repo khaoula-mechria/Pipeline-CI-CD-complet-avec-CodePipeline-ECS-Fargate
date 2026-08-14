@@ -35,8 +35,8 @@ Description: >
 
 # ------------------------------------------------------------------
 # NOTE ON DEPLOYMENT ORDER (already documented in iam.yaml/ecs-cluster.yaml):
-#   1. vpc.yml   2. iam.yaml   3. secrets-manager.yaml   4. ecr.yaml
-#   5. codebuild.yaml   6. ecs-cluster.yaml   7. alb.yaml
+#   1. vpc.yml   2. secrets-manager.yaml   3. ecr.yaml   4. codebuild.yaml
+#   5. iam.yaml   6. ecs-cluster.yaml   7. alb.yaml
 #   8. ecs-task-definition.yaml   9. ecs-service.yaml
 #   10. pipeline.yml  <- this stack (imports the exports of the 9
 #      preceding stacks; no longer creates the ECS Fargate Service or the ALB itself)
@@ -79,9 +79,11 @@ Parameters:
     Default: main
     Description: >
       Branch monitored by this pipeline. Intentionally only one branch (main):
-      build/test validation for feature/* branches is already covered
-      independently by the CodeBuild webhook (codebuild.yaml, triggered on main
-      or develop). No second pipeline is needed for that.
+      build/test validation for feature/* branches is already covered by
+      .github/workflows/ci.yml (GitHub Actions), which runs on every
+      feature/** push. codebuild.yaml's own webhook only fires on main/develop
+      (a redundant standalone build, not a feature/* one) -- no second
+      CodePipeline is needed here.
 
   EnableManualApproval:
     Type: String
@@ -179,6 +181,25 @@ Resources:
             Condition:
               ArnEquals:
                 aws:SourceArn: !GetAtt PipelineStateChangeRule.Arn
+
+          # CloudWatch alarms (observability.yml, ecs-autoscaling.yaml) also
+          # publish to this topic via AlarmActions/OKActions. A CloudWatch
+          # alarm publishes as the cloudwatch.amazonaws.com service principal,
+          # not through an IAM role -- without this statement, every alarm
+          # transitions state correctly but its SNS publish is silently
+          # rejected (AccessDenied logged internally, no visible pipeline
+          # failure), so the F4 email notification never arrives. Scoped by
+          # account rather than a single alarm ARN, since several unrelated
+          # alarms across two stacks all publish here.
+          - Sid: AllowCloudWatchAlarmsPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref PipelineNotificationsTopic
+            Condition:
+              StringEquals:
+                aws:SourceOwner: !Ref AWS::AccountId
 
   PipelineStateChangeRule:
     Type: AWS::Events::Rule
@@ -387,7 +408,15 @@ Resources:
                 # appspec.yaml contains no account-specific values
                 # -> can stay versioned as-is in the repo (Source).
                 AppSpecTemplateArtifact: SourceArtifact
-                AppSpecTemplatePath: appspec.yaml
+                # SourceArtifact is the raw GitHub checkout with the repo's full
+                # tree preserved (unlike BuildArtifact, which discard-paths
+                # flattens) -- the file lives at task-manager/appspec.yaml, not
+                # at the artifact root. Same bug class already hit and fixed for
+                # BuildSpec in codebuild.yaml ("CodeBuild looked for the file at
+                # the root and the build failed"); this is the Deploy-stage
+                # equivalent, which would otherwise fail every single run right
+                # after Source and Build both succeed.
+                AppSpecTemplatePath: task-manager/appspec.yaml
                 Image1ArtifactName: BuildArtifact
                 # Must match the <IMAGE1_NAME> placeholder used
                 # in taskdef.template.json (container "image" field).
