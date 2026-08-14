@@ -137,6 +137,30 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-pipeline-notifications'
 
+              # Required when this project runs as a CodePipeline Build action
+              # (pipeline.yml): CodePipeline stages the Source artifact in S3 and
+              # expects the BUILD PROJECT'S OWN role -- not just
+              # CodePipelineServiceRole in iam.yaml -- to read it, then write back
+              # the output artifact (imageDetail.json, taskdef.json) that
+              # CodeDeployToECS consumes next. Without this, the pipeline's Build
+              # stage fails with S3 Access Denied even though a standalone,
+              # webhook-triggered build (Artifacts: NO_ARTIFACTS below) works fine.
+              #
+              # Bucket referenced by naming convention, not Fn::ImportValue: this
+              # stack deploys before pipeline.yml, which creates the bucket -- same
+              # reasoning as PublishScanNotifications above and the equivalent
+              # statement on CodePipelineServiceRole in iam.yaml.
+              - Sid: PipelineArtifactsBucketAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-pipeline-artifacts-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-pipeline-artifacts-${AWS::AccountId}/*'
+
   # ------------------------------------------------------------------
   # CLOUDWATCH LOG GROUP FOR BUILDS
   #
