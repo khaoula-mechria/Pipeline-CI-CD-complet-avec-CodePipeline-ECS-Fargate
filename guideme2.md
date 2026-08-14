@@ -709,13 +709,18 @@ Ran 242 rules on 12 files: 1 finding.
 Error: Process completed with exit code 1.
 ```
 
-**Why:** `buildspec.yml` and `ci.yml` both run `semgrep --config auto --error ...`. The `--error` flag fails the build on **any** finding, regardless of that rule's own severity label (INFO/WARNING/ERROR are just metadata — `--error` doesn't filter by them). In this app, that one finding was Semgrep's built-in `express-check-csurf-middleware-usage` audit rule (an INFO-level suggestion, not an actual vulnerability here). The rule always matches the `const app = express()` initialization line — never the individual route handlers — so an earlier suppression comment placed above the `/add`/`/toggle`/`/delete` routes never actually took effect, and the gate kept failing build after build.
+**Why:** `buildspec.yml` and `ci.yml` both run `semgrep --config auto --error ...`. The `--error` flag fails the build on **any** finding, regardless of that rule's own severity label (INFO/WARNING/ERROR are just metadata — `--error` doesn't filter by them). In this app, that one finding was Semgrep's built-in `express-check-csurf-middleware-usage` audit rule (an INFO-level suggestion, not an actual vulnerability here). The rule always matches the `const app = express()` initialization line — never the individual route handlers.
 
-**Fix applied** (`task-manager/src/app.js`): the `// nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage` comment now sits directly above `const app = express();` — the line the rule actually flags — with a note on why CSRF protection doesn't apply here (this app has no session or auth cookie for a forged cross-site request to exploit).
+**This took two fixes to actually resolve**, both in `task-manager/src/app.js`:
+1. An earlier suppression comment sat above the `/add`/`/toggle`/`/delete` routes instead of above `const app = express()` — wrong line, so it silently matched nothing.
+2. After moving it to the right line, it *still* failed, because the rule's real `check_id` isn't the path-derived name you'd expect from its registry page (`javascript.express.security.audit.express-check-csurf-middleware-usage`) — Semgrep appends the rule's own `id:` field a second time, so the actual id is `javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage`. A `// nosemgrep: <id>` comment has to match that exact string or it's a silent no-op — Semgrep doesn't warn you that your suppression matched nothing.
 
-**If a different or additional finding shows up next time:** the console summary only prints finding *counts*, never the rule id/file/line/message — that detail only exists in `semgrep-report.json`. To read it:
+**How this was verified**, since the console summary never shows the rule id and the failed run's log/artifact both require GitHub auth to fetch: installed Semgrep in WSL (`pip install semgrep`, same 1.173.0 version CI uses) and ran the identical `semgrep --config auto --error --json --output semgrep-report.json .` from `task-manager/` directly against the working tree. The JSON's `results[].check_id` field is the ground truth for the exact string a `nosemgrep:` comment must match. **Lesson for next time:** if you're not sure a `nosemgrep:<id>` suppression is actually taking effect, don't trust the id shown on the rule's semgrep.dev page — run Semgrep locally (WSL if on Windows; the CLI has no native Windows build) and read `check_id` straight from the JSON output before pushing.
+
+**If a different or additional finding shows up:** the console summary only prints finding *counts*, never the rule id/file/line/message — that detail only exists in `semgrep-report.json`. To read it:
+- **Locally:** run the command above and open the JSON, or skip `--output` and read `results[].check_id` / `.path` / `.start.line` / `.extra.message` directly.
 - **CodeBuild:** `buildspec.yml` already `cat`s that file to the build log (CloudWatch Logs, PRE_BUILD phase) whenever the gate fails — just scroll to the `pre_build` section of the failed build's log.
-- **GitHub Actions:** download the `test-reports` artifact from the failed run's summary page and open `semgrep-report.json` inside it.
+- **GitHub Actions:** download the `test-reports` artifact from the failed run's summary page and open `semgrep-report.json` inside it (requires being logged in).
 
 ---
 
