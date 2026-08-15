@@ -1028,13 +1028,13 @@ Running ECS tasks: none
 
 ## The 4 things to watch most closely
 
-**1. Secrets Manager's 30-day recovery window blocks a fast redeploy.**
-Deleting the `taskmanager-dev-secrets` stack doesn't immediately free the secret names (`taskmanager/dev/db`, `taskmanager/dev/api-key`) — AWS schedules them for deletion and holds the name for up to 30 days. Redeploying that stack again soon after a teardown fails with `... already scheduled for deletion`. If you hit this, force-delete both secrets before redeploying:
+**1. Secrets Manager's recovery window *can* block a fast redeploy — but a plain `delete-stack` teardown of `taskmanager-dev-secrets` has NOT reproduced this so far.**
+The general risk is real and well-documented: `AWS::SecretsManager::Secret` normally holds a deleted secret's name for a recovery window (default ~30 days) before it's reusable, and `secrets-manager.yaml` sets no `RecoveryWindowInDays`/force-delete property to skip that. If it happens, redeploying the stack soon after a teardown fails with `... already scheduled for deletion`, and the fix is:
 ```powershell
 aws secretsmanager delete-secret --secret-id taskmanager/dev/db --force-delete-without-recovery --region eu-west-2
 aws secretsmanager delete-secret --secret-id taskmanager/dev/api-key --force-delete-without-recovery --region eu-west-2
 ```
-Consider running this as part of step 18's teardown from now on, right after the `delete-stack` loop, so it never blocks the next session.
+**However**, re-verified on 2026-08-15 with a controlled test (deploy `secrets` alone → `delete-stack` → immediately `describe-secret`): both secrets came back `ResourceNotFoundException` right away, not "pending deletion" — i.e. a full stack *deletion* purged them immediately, three separate times this session, with no explicit force-delete step. This suggests CloudFormation's own deletion path for this resource type may already delete without the recovery window by default (undocumented, not something this template configures). The scenario the force-delete commands above still protect against: a **stack update that replaces** the secret resource (rather than a full stack delete), or a secret deleted directly via console/CLI outside of CloudFormation — both go through the standard Secrets Manager API default, which does keep the recovery window. Keep the force-delete commands in your back pocket for those cases; don't assume you need to run them after an ordinary full teardown of this stack.
 
 **2. GitHub Connection = `AVAILABLE`**
 Don't start the pipeline until this shows `AVAILABLE`.
