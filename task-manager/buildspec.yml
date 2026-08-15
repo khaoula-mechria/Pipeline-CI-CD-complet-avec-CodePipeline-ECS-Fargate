@@ -73,7 +73,7 @@ phases:
       # so it's not pushed at all. (ecr.yaml's repo is MUTABLE as of
       # 2026-08-14 -- see that file for why -- but a moving "latest" tag
       # still wouldn't add any value here.)
-      - docker build -t "$ECR_REPOSITORY_URI:$IMAGE_TAG" .
+      - docker build --build-arg "APP_VERSION=$IMAGE_TAG" -t "$ECR_REPOSITORY_URI:$IMAGE_TAG" .
       - echo "Taille de l'image generee (cible < 200 Mo) :"
       - docker images "$ECR_REPOSITORY_URI:$IMAGE_TAG"
 

@@ -39,6 +39,17 @@ app.get('/health', (_request, response) => {
 });
 
 // --------------------------------------------------------------------------
+// Identifies which build is actually running in production. APP_VERSION is
+// baked in at image build time (buildspec.yml passes the commit-SHA IMAGE_TAG
+// as a Docker build-arg) — this is what makes a Blue/Green traffic shift
+// externally verifiable: hit the ALB before and after a deployment and see
+// the commit SHA change once GREEN takes over.
+// --------------------------------------------------------------------------
+app.get('/version', (_request, response) => {
+  response.status(200).json({ version: process.env.APP_VERSION || 'dev' });
+});
+
+// --------------------------------------------------------------------------
 // HTML interface: list (with search/filter/sort) + add/edit/toggle/delete.
 // Search, status, priority, and sort all live in the query string rather than
 // server-side session state, so the page stays a single stateless GET that's

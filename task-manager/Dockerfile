@@ -30,6 +30,13 @@ FROM node:20-alpine AS production
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Identifie le build qui tourne réellement (endpoint /version) : buildspec.yml
+# passe le commit-SHA IMAGE_TAG en build-arg, ce qui rend un traffic shift
+# Blue/Green vérifiable de l'extérieur (l'ALB renvoie un SHA différent une
+# fois que GREEN a pris le relais).
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 # Applique les correctifs déjà disponibles dans les dépôts Alpine pour les
 # paquets OS (ex. openssl) sans attendre qu'une nouvelle version de l'image
 # de base node:20-alpine soit publiée en amont.
