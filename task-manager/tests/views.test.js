@@ -2,7 +2,7 @@ const request = require('supertest');
 
 const app = require('../src/app');
 const tasks = require('../src/tasks');
-const { escapeHtml, priorityVariant, renderIndex } = require('../src/views');
+const { escapeHtml, priorityVariant, isOverdue, renderIndex } = require('../src/views');
 
 beforeEach(() => {
   tasks.reset();
@@ -56,6 +56,65 @@ describe('GET /', () => {
     expect(response.text).not.toContain('<script>alert(1)</script>');
     expect(response.text).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
   });
+
+  it('escapes a task title inside its own edit form (attribute-injection XSS)', async () => {
+    tasks.add({ title: '"><script>alert(1)</script>' });
+
+    const response = await request(app).get('/');
+
+    expect(response.text).not.toContain('<script>alert(1)</script>');
+  });
+
+  it('shows the due date on a task that has one', async () => {
+    tasks.add({ title: 'Avec échéance', dueDate: '2026-09-01' });
+
+    const response = await request(app).get('/');
+
+    expect(response.text).toContain('2026-09-01');
+  });
+
+  it('flags an overdue task but not a done one with the same past due date', async () => {
+    const overdue = tasks.add({ title: 'En retard', dueDate: '2000-01-01' });
+    const doneButPast = tasks.add({ title: 'Faite quand même', dueDate: '2000-01-01' });
+    tasks.toggle(doneButPast.id);
+
+    const response = await request(app).get('/');
+
+    expect(response.text).toContain('en retard');
+    // Exactly one occurrence: the still-open task, not the done one.
+    expect(response.text.match(/\(en retard\)/g)).toHaveLength(1);
+  });
+
+  it('narrows the list with a search query, reflecting the query back into the search box', async () => {
+    tasks.add({ title: 'Rédiger le rapport' });
+    tasks.add({ title: 'Autre chose' });
+
+    const response = await request(app).get('/?q=rapport');
+
+    expect(response.text).toContain('Rédiger le rapport');
+    expect(response.text).not.toContain('Autre chose');
+    expect(response.text).toContain('value="rapport"');
+  });
+
+  it('filters by status via the query string', async () => {
+    const done = tasks.add({ title: 'Faite' });
+    tasks.add({ title: 'Pas faite' });
+    tasks.toggle(done.id);
+
+    const response = await request(app).get('/?status=done');
+
+    expect(response.text).toContain('Faite');
+    expect(response.text).not.toContain('Pas faite');
+  });
+
+  it('shows a dedicated message when filters exclude every task, tasks still existing', async () => {
+    tasks.add({ title: 'Une tâche' });
+
+    const response = await request(app).get('/?q=inexistant');
+
+    expect(response.text).toContain('Aucune tâche ne correspond à ces filtres');
+    expect(response.text).not.toContain('Aucune tâche pour le moment');
+  });
 });
 
 describe('escapeHtml', () => {
@@ -77,6 +136,24 @@ describe('priorityVariant', () => {
   });
 });
 
+describe('isOverdue', () => {
+  it('is false when the task has no due date', () => {
+    expect(isOverdue({ dueDate: '', status: tasks.STATUS_TODO })).toBe(false);
+  });
+
+  it('is true for a past due date on a task that is not done', () => {
+    expect(isOverdue({ dueDate: '2000-01-01', status: tasks.STATUS_TODO })).toBe(true);
+  });
+
+  it('is false for a past due date once the task is done', () => {
+    expect(isOverdue({ dueDate: '2000-01-01', status: tasks.STATUS_DONE })).toBe(false);
+  });
+
+  it('is false for a due date in the future', () => {
+    expect(isOverdue({ dueDate: '2999-01-01', status: tasks.STATUS_TODO })).toBe(false);
+  });
+});
+
 describe('renderIndex', () => {
   it('omits the description block when the task has none', () => {
     const html = renderIndex([
@@ -91,5 +168,24 @@ describe('renderIndex', () => {
     const html = renderIndex([]);
 
     expect(html).toContain(`<option value="${tasks.DEFAULT_PRIORITY}" selected>`);
+  });
+
+  it('preselects the current filters in the toolbar', () => {
+    const html = renderIndex([], {
+      filters: { query: 'facture', status: 'done', priority: 'Haute', sort: 'due' },
+    });
+
+    expect(html).toContain('value="facture"');
+    expect(html).toContain('<option value="done" selected>');
+    expect(html).toContain('<option value="Haute" selected>');
+    expect(html).toContain('<option value="due" selected>');
+  });
+
+  it('defaults the toolbar to "all"/"created" when no filters are given', () => {
+    const html = renderIndex([]);
+
+    expect(html).toContain('<option value="all" selected>Tous les statuts</option>');
+    expect(html).toContain('<option value="all" selected>Toutes priorités</option>');
+    expect(html).toContain('<option value="created" selected>');
   });
 });

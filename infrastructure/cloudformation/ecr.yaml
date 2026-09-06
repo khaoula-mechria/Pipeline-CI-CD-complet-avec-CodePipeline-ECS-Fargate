@@ -1,68 +1,68 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 # ------------------------------------------------------------------
-# NOTE D'ENCODAGE
-# Ce fichier est volontairement en ASCII pur (aucun accent, aucun
-# caractere special). La console CloudFormation affichait "priv??"
-# au lieu de "prive" : les octets UTF-8 des accents sont mal decodes
-# dans le champ Description. Merci de ne PAS reintroduire d'accents
-# dans les valeurs (Description, ParameterLabels, Outputs), sous peine
-# de reproduire le probleme.
+# ENCODING NOTE
+# This file is deliberately in pure ASCII (no accents, no special
+# characters). The CloudFormation console was displaying "priv??"
+# instead of "prive" (private): the UTF-8 bytes of accented characters
+# were being decoded incorrectly in the Description field. Please do
+# NOT reintroduce accented characters in the values (Description,
+# ParameterLabels, Outputs), or you will reproduce the problem.
 # ------------------------------------------------------------------
 
 Description: >-
-  Registre Amazon ECR prive (CI/CD AWS) - stocke les images Docker construites
-  par CodeBuild. Scan on push active, chiffrement AES256, tags immuables.
-  Lifecycle Policy : expire les images untagged puis ne conserve que les N
-  dernieres images.
+  Amazon ECR private registry (AWS CI/CD) - stores Docker images built by
+  CodeBuild. Scan on push is enabled, AES256 encryption is used, and tags are
+  immutable. Lifecycle Policy: expires untagged images and keeps only the last
+  N images.
 
 # ------------------------------------------------------------------
-# INTERFACE CONSOLE
-# Regroupe les parametres quand le template est deploye depuis la
-# console CloudFormation (purement cosmetique).
+# CONSOLE INTERFACE
+# Groups the parameters when the template is deployed from the
+# CloudFormation console (purely cosmetic).
 # ------------------------------------------------------------------
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: Nommage
+          default: Naming
         Parameters:
           - ProjectName
           - Environment
       - Label:
-          default: Cycle de vie des images
+          default: Image lifecycle
         Parameters:
           - MaxImageCount
           - UntaggedRetentionDays
     ParameterLabels:
       ProjectName:
-        default: Nom du projet (minuscules)
+        default: Project name (lowercase)
       Environment:
-        default: Environnement cible
+        default: Target environment
       MaxImageCount:
-        default: Nombre d'images a conserver
+        default: Number of images to keep
       UntaggedRetentionDays:
-        default: Retention des images untagged (jours)
+        default: Untagged image retention (days)
 
 # ------------------------------------------------------------------
-# PARAMETRES
-# Permettent de reutiliser le meme template pour dev / staging / prod
-# sans dupliquer le code (bonne pratique IaC).
+# PARAMETERS
+# Allow the same template to be reused for dev / staging / prod
+# without duplicating code (IaC best practice).
 # ------------------------------------------------------------------
 Parameters:
   ProjectName:
     Type: String
     Default: taskmanager
     Description: >-
-      Nom du projet, utilise comme prefixe de nommage des ressources.
-      Doit etre en minuscules (contrainte ECR).
-    # Le motif interdit le tiret final et impose de commencer par une lettre.
+      Project name, used as a resource naming prefix.
+      Must be lowercase (ECR constraint).
+    # The pattern forbids a trailing hyphen and requires the name to start with a letter.
     AllowedPattern: '^[a-z]([a-z0-9-]*[a-z0-9])?$'
     MinLength: 2
     MaxLength: 30
     ConstraintDescription: >-
-      2 a 30 caracteres, minuscules / chiffres / tirets, doit commencer par
-      une lettre et ne pas terminer par un tiret.
+      2 to 30 characters, lowercase / numbers / hyphens, must start with a
+      letter and not end with a hyphen.
 
   Environment:
     Type: String
@@ -71,7 +71,7 @@ Parameters:
       - dev
       - staging
       - prod
-    Description: Environnement cible. Impacte le nom du repository.
+    Description: Target environment. Affects the repository name.
 
   MaxImageCount:
     Type: Number
@@ -79,8 +79,8 @@ Parameters:
     MinValue: 1
     MaxValue: 100
     Description: >-
-      Nombre maximum d'images conservees par la Lifecycle Policy.
-      Au-dela, les images les plus anciennes sont supprimees automatiquement.
+      Maximum number of images kept by the Lifecycle Policy.
+      Past this limit, the oldest images are deleted automatically.
 
   UntaggedRetentionDays:
     Type: Number
@@ -88,80 +88,80 @@ Parameters:
     MinValue: 1
     MaxValue: 30
     Description: >-
-      Duree de conservation des images sans tag (layers laisses par des
-      builds echoues ou interrompus) avant expiration automatique.
+      Retention period for untagged images (layers left by failed or interrupted
+      builds) before automatic expiration.
 
 # ------------------------------------------------------------------
-# RESSOURCES
+# RESOURCES
 # ------------------------------------------------------------------
 Resources:
 
-  # Le repository ECR lui-meme.
+  # The ECR repository itself.
   #
-  # AWS::ECR::Repository cree TOUJOURS un registre PRIVE : il n'existe
-  # aucune option "public" ici. Un registre public serait une ressource
-  # d'un autre type (AWS::ECR::PublicRepository).
+  # AWS::ECR::Repository ALWAYS creates a PRIVATE registry: there is no
+  # "public" option here. A public registry would be a resource of a
+  # different type (AWS::ECR::PublicRepository).
   AppRepository:
     Type: AWS::ECR::Repository
 
-    # CloudFormation ne peut PAS supprimer un repository ECR non vide :
-    # la suppression de stack echouerait en DELETE_FAILED des qu'une image
-    # est presente. On retient donc explicitement la ressource, ce qui
-    # protege aussi les artefacts en prod.
-    # Pour un stack dev jetable : passer DeletionPolicy a "Delete" et
-    # EmptyOnDelete a true ci-dessous.
+    # CloudFormation CANNOT delete a non-empty ECR repository: stack
+    # deletion would fail with DELETE_FAILED as soon as an image is
+    # present. The resource is therefore explicitly retained, which
+    # also protects the artifacts in prod.
+    # For a disposable dev stack: set DeletionPolicy to "Delete" and
+    # EmptyOnDelete to true below.
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
 
     Properties:
       RepositoryName: !Sub '${ProjectName}-${Environment}'
 
-      # Explicite : ne pas vider le repository automatiquement a la
-      # suppression (coherent avec DeletionPolicy: Retain).
+      # Explicit: do not automatically empty the repository on deletion
+      # (consistent with DeletionPolicy: Retain).
       EmptyOnDelete: false
 
-      # IMMUTABLE = un tag une fois pousse ne peut plus etre ecrase.
-      # Bonne pratique CI/CD : evite qu'un SHA soit remplace silencieusement
-      # par une autre image plus tard.
-      #
-      # /!\ CONSEQUENCE SUR LE PIPELINE : avec IMMUTABLE, un second
-      # "docker push <repo>:latest" echoue avec ImageTagAlreadyExistsException.
-      # Le buildspec doit donc tagger par SHA de commit / numero de build
-      # (ex: :$CODEBUILD_RESOLVED_SOURCE_VERSION) et NE PAS republier "latest".
-      # Si un tag mouvant "latest" est indispensable, repasser en MUTABLE.
-      ImageTagMutability: IMMUTABLE
+      # MUTABLE: switched back from IMMUTABLE on 2026-08-14. IMMUTABLE was
+      # meant to stop a commit-SHA tag from being silently replaced by
+      # different content, but it collides with a known, unfixed BuildKit/ECR
+      # interaction (moby/buildkit#3776, closed "not planned"): docker push
+      # can register the tag successfully server-side and still exit non-zero
+      # claiming the tag already exists, failing builds that actually
+      # succeeded. Since IMAGE_TAG is always the commit SHA (buildspec.yml),
+      # traceability doesn't depend on immutability -- a given SHA is only
+      # ever pushed with the same content.
+      ImageTagMutability: MUTABLE
 
-      # Critere d'acceptation : scan on push active.
-      # ECR lance automatiquement un scan de vulnerabilites (Basic Scanning,
-      # base sur la base CVE) a chaque "docker push".
+      # Acceptance criterion: scan on push enabled.
+      # ECR automatically runs a vulnerability scan (Basic Scanning,
+      # based on the CVE database) on every "docker push".
       #
-      # NOTE : si le registre du compte est configure en "Enhanced scanning"
-      # (Amazon Inspector), ce reglage par repository est ignore - le scan
-      # est alors pilote au niveau registre par
-      # AWS::ECR::RegistryScanningConfiguration (une seule par compte/region,
-      # donc a gerer dans un stack separe, pas ici).
+      # NOTE: if the account's registry is configured for "Enhanced
+      # scanning" (Amazon Inspector), this per-repository setting is
+      # ignored - the scan is then driven at the registry level by
+      # AWS::ECR::RegistryScanningConfiguration (only one per account/region,
+      # so it must be managed in a separate stack, not here).
       ImageScanningConfiguration:
         ScanOnPush: true
 
-      # Chiffrement au repos des images. AES256 = cle geree par AWS (gratuit).
-      # KMS serait l'alternative pour gerer sa propre cle (cout + rotation).
+      # Encryption at rest for images. AES256 = key managed by AWS (free).
+      # KMS would be the alternative for managing your own key (cost + rotation).
       EncryptionConfiguration:
         EncryptionType: AES256
 
-      # Critere d'acceptation : Lifecycle Policy.
-      # Regle 1  : expire vite les images untagged (builds echoues), sinon
-      #            elles consomment du stockage ET un des N emplacements.
-      # Regle 10 : ne conserve que les N dernieres images.
-      #            Une regle "tagStatus: any" doit obligatoirement porter le
-      #            rulePriority le PLUS ELEVE de la policy - d'ou le 10, qui
-      #            laisse de la place pour inserer des regles intermediaires.
+      # Acceptance criterion: Lifecycle Policy.
+      # Rule 1  : quickly expires untagged images (failed builds), otherwise
+      #           they consume storage AND one of the N slots.
+      # Rule 10 : keeps only the last N images.
+      #           A "tagStatus: any" rule must always carry the HIGHEST
+      #           rulePriority in the policy - hence the 10, which leaves
+      #           room to insert intermediate rules.
       LifecyclePolicy:
         LifecyclePolicyText: !Sub |
           {
             "rules": [
               {
                 "rulePriority": 1,
-                "description": "Expirer les images untagged apres ${UntaggedRetentionDays} jour(s)",
+                "description": "Expire untagged images after ${UntaggedRetentionDays} day(s)",
                 "selection": {
                   "tagStatus": "untagged",
                   "countType": "sinceImagePushed",
@@ -174,7 +174,7 @@ Resources:
               },
               {
                 "rulePriority": 10,
-                "description": "Garder uniquement les ${MaxImageCount} dernieres images",
+                "description": "Keep only the last ${MaxImageCount} images",
                 "selection": {
                   "tagStatus": "any",
                   "countType": "imageCountMoreThan",
@@ -187,19 +187,19 @@ Resources:
             ]
           }
 
-      # Politique d'acces au niveau du repository (resource-based policy).
+      # Repository-level access policy (resource-based policy).
       #
-      # A savoir : le statement "Allow" au principal <account>:root ne donne
-      # aucun droit supplementaire par rapport aux IAM policies identity-based
-      # du compte (les principals du compte proprietaire sont deja autorises
-      # via leur IAM policy). Il n'est reellement necessaire que pour un acces
-      # CROSS-ACCOUNT. On le garde pour rendre l'intention explicite.
-      # Le role IAM de CodeBuild doit de toute facon porter les memes actions
-      # dans sa policy identity-based, plus ecr:GetAuthorizationToken (action
-      # de niveau compte, non exprimable dans une resource policy).
+      # Note: the "Allow" statement for the <account>:root principal does
+      # not grant any additional rights beyond the account's identity-based
+      # IAM policies (principals of the owning account are already
+      # authorized via their IAM policy). It is only really necessary for
+      # CROSS-ACCOUNT access. It is kept here to make the intent explicit.
+      # The CodeBuild IAM role must in any case carry the same actions in
+      # its identity-based policy, plus ecr:GetAuthorizationToken (an
+      # account-level action that cannot be expressed in a resource policy).
       #
-      # Le statement "Deny" ci-dessous, lui, ajoute un vrai controle :
-      # il refuse tout acces non chiffre en transit.
+      # The "Deny" statement below, on the other hand, adds a real control:
+      # it refuses any access that is not encrypted in transit.
       RepositoryPolicyText:
         Version: '2012-10-17'
         Statement:
@@ -237,33 +237,33 @@ Resources:
 
 # ------------------------------------------------------------------
 # OUTPUTS
-# Exportes pour etre reutilises par d'autres stacks (ex: la stack
-# CodeBuild a besoin de RepositoryUri dans son buildspec, et la stack
-# IAM a besoin de RepositoryArn pour restreindre les policies).
+# Exported so they can be reused by other stacks (e.g. the CodeBuild
+# stack needs RepositoryUri in its buildspec, and the IAM stack needs
+# RepositoryArn to restrict its policies).
 #
-# Les noms d'export sont uniques par compte/region. On les construit a
-# partir de ProjectName + Environment (et NON de ${AWS::StackName}) car
-# c'est la convention attendue par les stacks consommatrices :
-# codebuild.yaml et ecs-task-definition.yaml font
+# Export names are unique per account/region. They are built from
+# ProjectName + Environment (and NOT from ${AWS::StackName}) because
+# that is the convention expected by the consuming stacks:
+# codebuild.yaml and ecs-task-definition.yaml use
 # !ImportValue '${ProjectName}-${Environment}-ecr-*'.
-# Consequence : un seul stack ECR par couple (projet, environnement) et
-# par region - ce qui est exactement l'intention ici.
+# Consequence: only one ECR stack per (project, environment) pair and
+# per region - which is exactly the intent here.
 # ------------------------------------------------------------------
 Outputs:
   RepositoryUri:
-    Description: URI complet du repository (a utiliser pour "docker push")
+    Description: Full repository URI (to use for "docker push")
     Value: !GetAtt AppRepository.RepositoryUri
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecr-uri'
 
   RepositoryArn:
-    Description: ARN du repository (pour restreindre les IAM policies CodeBuild/ECS)
+    Description: Repository ARN (used to restrict CodeBuild/ECS IAM policies)
     Value: !GetAtt AppRepository.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecr-arn'
 
   RepositoryName:
-    Description: Nom du repository ECR
+    Description: Name of the ECR repository
     Value: !Ref AppRepository
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ecr-name'

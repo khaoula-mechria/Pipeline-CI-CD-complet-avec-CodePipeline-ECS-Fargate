@@ -1,48 +1,50 @@
-Oui. Tu es maintenant dans le bon scénario : **région `eu-west-2`, SSO configuré, aucun stack existant, 12 templates présents dans `infrastructure/cloudformation/`**.
+You are now in the right scenario: **region `eu-west-2`, SSO configured, no existing stack, 12 templates present in `infrastructure/cloudformation/`**.
 
-Le CDC exige notamment CodePipeline, CodeBuild, ECR, ECS Fargate, CodeDeploy Blue/Green, ALB, Secrets Manager, CloudWatch/SNS, tests ≥80 %, SAST, scan Docker, autoscaling et rollback. 
+The requirements spec (CDC) calls for CodePipeline, CodeBuild, ECR, ECS Fargate, CodeDeploy Blue/Green, ALB, Secrets Manager, CloudWatch/SNS, ≥80% test coverage, SAST, Docker image scanning, autoscaling, and rollback.
 
-Je te conseille de faire **un seul déploiement complet + un seul test de pipeline + suppression immédiate**, avec `DesiredCount=1` pour limiter le coût.
+Recommended approach: **one full deployment + one pipeline test run + immediate teardown**, with `DesiredCount=1` to limit cost.
 
 ---
 
-# 0. Avant de commencer — verrouiller la région
+# 0. Before you start — lock the region
 
-Dans PowerShell, depuis la **racine du projet** :
+In PowerShell, from the **project root**:
 
 ```powershell
 cd "C:\Users\user\Desktop\Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate"
 
-$env:AWS_PROFILE="taskmanager"
+$env:AWS_PROFILE="AdministratorAccess-136609826386"
 $env:AWS_DEFAULT_REGION="eu-west-2"
 
-aws sso login --profile taskmanager
+aws sso login --profile AdministratorAccess-136609826386
 ```
 
-Puis :
+Then:
 
 ```powershell
-aws sts get-caller-identity --profile taskmanager
-aws configure get region --profile taskmanager
+aws sts get-caller-identity --profile AdministratorAccess-136609826386
+aws configure get region --profile AdministratorAccess-136609826386
 ```
 
-### Tu dois voir
+**Note:** `aws configure list-profiles` also shows a `default` profile — its credentials are stale/invalid. Always pass `AdministratorAccess-136609826386` explicitly (via `$env:AWS_PROFILE` or `--profile`); don't rely on whatever profile is currently the CLI's implicit default.
+
+### You should see
 
 ```text
 eu-west-2
 ```
 
-et dans `get-caller-identity` :
+and in `get-caller-identity`:
 
 ```text
 arn:aws:sts::XXXXXXXXXXXX:assumed-role/AWSReservedSSO_AdministratorAccess...
 ```
 
-Le guide confirme que `AdministratorAccess` est le rôle à utiliser pour pouvoir créer VPC, IAM et pipelines. 
+`AdministratorAccess` is the role to use so you can create the VPC, IAM, and pipeline resources.
 
 ---
 
-# 1. Vérifier qu'il n'y a vraiment aucune stack
+# 1. Confirm there really is no existing stack
 
 ```powershell
 aws cloudformation list-stacks `
@@ -52,15 +54,15 @@ aws cloudformation list-stacks `
   --output table
 ```
 
-### Attendu
+### Expected
 
-Aucune stack `taskmanager-dev-*`.
+No `taskmanager-dev-*` stack.
 
 ---
 
-# 2. Vérifier les 12 templates AVANT de créer quoi que ce soit
+# 2. Validate the 12 templates BEFORE creating anything
 
-C'est important.
+This step matters.
 
 ```powershell
 $files = @(
@@ -88,25 +90,35 @@ foreach ($f in $files) {
 }
 ```
 
-### Ce que tu veux
+### What you want
 
-Aucune erreur du type :
+No error of the form:
 
 ```text
 Template format error
 ```
 
-ou
+or
 
 ```text
 ValidationError
 ```
 
-**Si un seul template échoue : STOP ici.** Ne déploie pas les stacks suivantes.
+**If even one template fails: STOP here.** Do not deploy the remaining stacks.
 
 ---
 
-# 3. Déployer VPC
+### Deployment order — an important CloudFormation dependency
+
+The `iam.yaml` template imports the `taskmanager-dev-codebuild-arn` export. That means the **CodeBuild stack must be created before the IAM stack**.
+
+The requirements spec (CDC) does not dictate the order in which CloudFormation stacks are created; it only specifies the components and their responsibilities. An earlier version of this guide deployed IAM before CodeBuild, which caused the error `No export named taskmanager-dev-codebuild-arn found`.
+
+**Order used in this corrected guide:** VPC → Secrets Manager → ECR → (optional: manual Docker build/push sanity check) → CodeBuild → IAM/GitHub Connection → ECS Cluster → ALB → Task Definition → ECS Service → Pipeline/CodeDeploy → Autoscaling → Observability.
+
+---
+
+# 3. Deploy the VPC
 
 ```powershell
 aws cloudformation deploy `
@@ -117,13 +129,13 @@ aws cloudformation deploy `
   --region eu-west-2
 ```
 
-Attends :
+Wait for:
 
 ```text
 Successfully created/updated stack - taskmanager-dev-vpc
 ```
 
-### Vérification
+### Verify
 
 ```powershell
 aws cloudformation describe-stacks `
@@ -133,7 +145,7 @@ aws cloudformation describe-stacks `
   --output table
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws ec2 describe-vpcs `
@@ -143,7 +155,7 @@ aws ec2 describe-vpcs `
   --output table
 ```
 
-Et :
+And:
 
 ```powershell
 aws ec2 describe-nat-gateways `
@@ -153,79 +165,13 @@ aws ec2 describe-nat-gateways `
   --output table
 ```
 
-### Confirmation CDC
+### CDC confirmation
 
-Tu dois avoir le réseau nécessaire : VPC, subnets et security groups. Le CDC demande explicitement cette infrastructure. 
-
----
-
-# 4. IAM + GitHub Connection
-
-```powershell
-aws cloudformation deploy `
-  --template-file infrastructure/cloudformation/iam.yaml `
-  --stack-name taskmanager-dev-iam `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-  --capabilities CAPABILITY_NAMED_IAM `
-  --region eu-west-2
-```
-
-Vérifie :
-
-```powershell
-aws iam list-roles `
-  --region eu-west-2 `
-  --query "Roles[?starts_with(RoleName,'taskmanager-dev')].RoleName" `
-  --output table
-```
-
-Puis :
-
-```powershell
-aws codestar-connections list-connections `
-  --region eu-west-2 `
-  --query "Connections[].{Name:ConnectionName,Status:ConnectionStatus}" `
-  --output table
-```
-
-### Important
-
-Tu dois probablement voir :
-
-```text
-taskmanager-dev-github    PENDING
-```
-
-C'est normal.
-
-Console :
-
-[AWS CodeConnections — eu-west-2](https://eu-west-2.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-2&utm_source=chatgpt.com)
-
-Clique :
-
-**Update pending connection → GitHub → Authorize**
-
-Puis reviens à :
-
-```powershell
-aws codestar-connections list-connections `
-  --region eu-west-2 `
-  --query "Connections[].{Name:ConnectionName,Status:ConnectionStatus}" `
-  --output table
-```
-
-### Il faut obtenir
-
-```text
-taskmanager-dev-github    AVAILABLE
-```
-
-Le CDC demande bien GitHub comme source et un déclenchement automatique du pipeline. 
+You now have the required network layer: VPC, subnets, and security groups — explicitly required by the CDC.
 
 ---
 
-# 5. Secrets Manager
+# 4. Secrets Manager
 
 ```powershell
 aws cloudformation deploy `
@@ -236,7 +182,7 @@ aws cloudformation deploy `
   --region eu-west-2
 ```
 
-Vérifie :
+Verify:
 
 ```powershell
 aws secretsmanager list-secrets `
@@ -245,13 +191,13 @@ aws secretsmanager list-secrets `
   --output table
 ```
 
-### Confirmation CDC
+### CDC confirmation
 
-Les secrets doivent être dans Secrets Manager et non dans les variables CodeBuild en clair. C'est une exigence explicite du CDC. 
+Secrets must live in Secrets Manager, never as plaintext CodeBuild environment variables. This is an explicit CDC requirement.
 
 ---
 
-# 6. ECR
+# 5. ECR
 
 ```powershell
 aws cloudformation deploy `
@@ -262,7 +208,7 @@ aws cloudformation deploy `
   --region eu-west-2
 ```
 
-Vérifie :
+Verify:
 
 ```powershell
 aws ecr describe-repositories `
@@ -272,38 +218,91 @@ aws ecr describe-repositories `
   --output table
 ```
 
-### Très important
+Also check the account's **registry-wide** scanning mode — the per-repo `ScanOnPush` above doesn't tell you this, and it changes how the scan gate behaves (see step 14's troubleshooting):
 
-Le CDC demande :
-
-* image Docker ;
-* tag SHA du commit ;
-* push ECR ;
-* scan vulnérabilités. 
-
-Ton guide signale toutefois un problème potentiel :
-
-```text
-IMMUTABLE
+```powershell
+aws inspector2 batch-get-account-status --region eu-west-2
 ```
 
-avec un `buildspec` qui pousse :
+If `resourceState.ecr.status` is `ENABLED`, the registry uses **Enhanced Scanning (Amazon Inspector v2)**, not Basic Scanning — that's the case for this account.
 
-```text
-latest
+### Important
+
+The CDC requires:
+
+* a Docker image;
+* tagged with the commit SHA;
+* pushed to ECR;
+* scanned for vulnerabilities.
+
+The repository is **`MUTABLE`** (switched back from `IMMUTABLE` on 2026-08-14 — see step 14's troubleshooting for why: `IMMUTABLE` made every automated build fail at `docker push`, a known unfixed BuildKit/ECR interaction, not something specific to this project). `buildspec.yml` still only pushes the commit-SHA tag on every automated build, never `latest` — that's just not useful, not a mutability workaround. One consequence either way: **something still has to push a `:latest` image once, manually, before the Task Definition/ECS Service stacks (steps 11-12)** — `ecs-task-definition.yaml`'s bootstrap `ContainerImage` parameter defaults to `<repo>:latest` for that very first task, before the pipeline has ever run and produced a real, SHA-tagged revision. Step 6 below does exactly that, once.
+
+---
+
+# 6. Build and push the Docker image manually (required once, before step 11)
+
+Unlike the automated build CodeBuild does for you via `task-manager/buildspec.yml` (step 7 onward, one SHA-tagged image per pipeline run), this one-time manual push is **required**: it's the only thing that ever puts a `:latest`-tagged image in ECR, which `ecs-task-definition.yaml`'s bootstrap `ContainerImage` parameter needs by default (see the note in step 5). Skip it only if you plan to pass an explicit `ContainerImage` parameter override to step 11 instead.
+
+It's also useful as a sanity check regardless: if this step works, you know the `Dockerfile`, the app, and your ECR permissions are fine, so anything that fails later in CodeBuild is a **pipeline/CodeBuild** problem, not a **Docker/app** problem.
+
+```powershell
+$ecrUri = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-ecr-uri'].Value" `
+  --output text
+
+$ecrUri
 ```
 
-Cela peut casser le **deuxième build**. 
+Log in to ECR, then build from the `task-manager/` directory (that's where the `Dockerfile`, `package.json`, and application code live — the same build context CodeBuild uses):
 
-**Ne modifie rien maintenant si ton premier objectif est simplement de faire le test.**
+```powershell
+aws ecr get-login-password --region eu-west-2 | docker login --username AWS --password-stdin $ecrUri
+
+cd task-manager
+
+$imageTag = (git rev-parse --short=8 HEAD)
+Write-Host "Image tag for this manual build -> $imageTag"
+
+docker build -t "${ecrUri}:$imageTag" -t "${ecrUri}:latest" .
+
+cd ..
+```
+
+Check the image size (target: under 200 MB):
+
+```powershell
+docker images "${ecrUri}:$imageTag"
+```
+
+Push both tags:
+
+```powershell
+docker push "${ecrUri}:$imageTag"
+docker push "${ecrUri}:latest"
+```
+
+**Push `:latest` here, and only here.** Nothing else in this project ever pushes `:latest` again — `buildspec.yml` deliberately only pushes the commit-SHA tag, since a moving `latest` tag isn't useful once the pipeline is producing real, traceable revisions — so there's nothing to collide with it later.
+
+### Verify
+
+```powershell
+aws ecr describe-images `
+  --repository-name taskmanager-dev `
+  --region eu-west-2 `
+  --query "imageDetails[].{Tags:imageTags,Pushed:imagePushedAt,SizeMB:imageSizeInBytes}" `
+  --output table
+```
+
+**Note:** this only proves the image builds and pushes. It does **not** run the unit tests, the coverage gate, or the SAST (Semgrep) scan — those only run inside CodeBuild/CI, via `buildspec.yml` and `.github/workflows/ci.yml`. Passing this manual step is a good sign, but it does not guarantee CodeBuild's automated build (step 7) will succeed too.
 
 ---
 
 # 7. CodeBuild
 
-Ici tu dois mettre **ton vrai dépôt GitHub**.
+Use **your actual GitHub repository** here.
 
-Exemple :
+Example:
 
 ```powershell
 aws cloudformation deploy `
@@ -312,12 +311,12 @@ aws cloudformation deploy `
   --parameter-overrides `
       ProjectName=taskmanager `
       Environment=dev `
-      GitHubRepoUrl=https://github.com/TON_USER/TON_REPO `
+      GitHubRepoUrl=https://github.com/khaoula-mechria/Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate `
   --capabilities CAPABILITY_NAMED_IAM `
   --region eu-west-2
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws codebuild list-projects `
@@ -326,7 +325,7 @@ aws codebuild list-projects `
   --output table
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws codebuild batch-get-projects `
@@ -336,11 +335,79 @@ aws codebuild batch-get-projects `
   --output table
 ```
 
-Le CDC demande CodeBuild pour build/test/scan, avec couverture ≥80 % et SAST. 
+The CDC requires CodeBuild for build/test/scan, with ≥80% coverage and SAST.
+
+**Note (2026-08-14):** if this account's ECR registry uses Enhanced Scanning (see step 5's `inspector2 batch-get-account-status` check), the CodeBuild role needs `inspector2:ListCoverage` and `inspector2:ListFindings` (both `Resource: "*"`, an AWS constraint — neither action supports resource-level scoping) in addition to `ecr:DescribeImageScanFindings`. Without them, the build's ECR-scan gate (see step 14's troubleshooting) fails with `AccessDeniedException`. Already added to `codebuild.yaml`; nothing extra to do here, just don't remove them if you ever trim this policy down.
 
 ---
 
-# 8. ECS Cluster
+# 8. IAM + GitHub Connection
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/iam.yaml `
+  --stack-name taskmanager-dev-iam `
+  --parameter-overrides ProjectName=taskmanager Environment=dev `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws iam list-roles `
+  --region eu-west-2 `
+  --query "Roles[?starts_with(RoleName,'taskmanager-dev')].RoleName" `
+  --output table
+```
+
+Then:
+
+```powershell
+aws codestar-connections list-connections `
+  --region eu-west-2 `
+  --query "Connections[].{Name:ConnectionName,Status:ConnectionStatus}" `
+  --output table
+```
+
+### Important
+
+You will likely see:
+
+```text
+taskmanager-dev-github    PENDING
+```
+
+That's expected.
+
+Console:
+
+[AWS CodeConnections — eu-west-2](https://eu-west-2.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-2)
+
+Click:
+
+**Update pending connection → GitHub → Authorize**
+
+Then go back to:
+
+```powershell
+aws codestar-connections list-connections `
+  --region eu-west-2 `
+  --query "Connections[].{Name:ConnectionName,Status:ConnectionStatus}" `
+  --output table
+```
+
+### You need to reach
+
+```text
+taskmanager-dev-github    AVAILABLE
+```
+
+The CDC requires GitHub as the source and an automatic pipeline trigger.
+
+---
+
+# 9. ECS Cluster
 
 ```powershell
 aws cloudformation deploy `
@@ -351,7 +418,7 @@ aws cloudformation deploy `
   --region eu-west-2
 ```
 
-Vérifie :
+Verify:
 
 ```powershell
 aws ecs describe-clusters `
@@ -361,17 +428,17 @@ aws ecs describe-clusters `
   --output table
 ```
 
-Attendu :
+Expected:
 
 ```text
 ACTIVE    0
 ```
 
-C'est normal : **Fargate ne nécessite aucune instance EC2**. Le CDC demande explicitement ECS Fargate comme runtime serverless. 
+That's normal: **Fargate needs no EC2 instance**. The CDC explicitly requires ECS Fargate as the serverless runtime.
 
 ---
 
-# 9. ALB
+# 10. ALB
 
 ```powershell
 $vpcId = aws cloudformation list-exports `
@@ -388,9 +455,9 @@ $vpcId
 $pubSub
 ```
 
-Les deux doivent retourner une valeur.
+Both must return a value.
 
-Puis :
+Then:
 
 ```powershell
 aws cloudformation deploy `
@@ -407,7 +474,7 @@ aws cloudformation deploy `
   --region eu-west-2
 ```
 
-Vérifie :
+Verify:
 
 ```powershell
 aws elbv2 describe-load-balancers `
@@ -417,11 +484,11 @@ aws elbv2 describe-load-balancers `
   --output table
 ```
 
-Le CDC demande explicitement un ALB et target groups Blue/Green. 
+The CDC explicitly requires an ALB with Blue/Green target groups.
 
 ---
 
-# 10. Task Definition
+# 11. Task Definition
 
 ```powershell
 aws cloudformation deploy `
@@ -437,7 +504,7 @@ aws cloudformation deploy `
   --region eu-west-2
 ```
 
-Vérifie :
+Verify:
 
 ```powershell
 aws ecs describe-task-definition `
@@ -449,15 +516,15 @@ aws ecs describe-task-definition `
 
 ---
 
-# 11. ECS Service — **1 seule tâche pour économiser**
+# 12. ECS Service — **1 task only, to save cost**
 
-Ici je réduis volontairement :
+Deliberately reducing to:
 
 ```text
 DesiredCount=1
 ```
 
-Le CDC exige le scaling automatique, mais ne fixe pas le nombre initial de tâches. Le guide indique également que `DesiredCount=1` réduit le coût Fargate. 
+The CDC requires automatic scaling but does not fix the initial task count, and `DesiredCount=1` keeps the Fargate cost down for this test run.
 
 ```powershell
 $vpcId = aws cloudformation list-exports `
@@ -484,7 +551,7 @@ aws cloudformation deploy `
   --region eu-west-2
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws ecs describe-services `
@@ -495,13 +562,13 @@ aws ecs describe-services `
   --output table
 ```
 
-### Attendu
+### Expected
 
 ```text
 ACTIVE    1    1    CODE_DEPLOY
 ```
 
-Puis :
+Then:
 
 ```powershell
 $tgBlue = aws cloudformation list-exports `
@@ -516,13 +583,13 @@ aws elbv2 describe-target-health `
   --output table
 ```
 
-### Attendu
+### Expected
 
 ```text
 healthy
 ```
 
-Puis :
+Then:
 
 ```powershell
 $dns = aws cloudformation list-exports `
@@ -534,19 +601,19 @@ $dns
 Invoke-RestMethod "http://$dns/health"
 ```
 
-### Tu veux obtenir
+### You want to get
 
 ```text
 status : ok
 ```
 
-Cela valide concrètement **réseau → ALB → ECS → container → health check**.
+This concretely validates **network → ALB → ECS → container → health check**.
 
 ---
 
-# 12. Pipeline + CodeDeploy
+# 13. Pipeline + CodeDeploy
 
-C'est la partie la plus importante pour le CDC.
+This is the most important part for the CDC.
 
 ```powershell
 aws cloudformation deploy `
@@ -555,14 +622,14 @@ aws cloudformation deploy `
   --parameter-overrides `
       ProjectName=taskmanager `
       Environment=dev `
-      FullRepositoryId=TON_USER/TON_REPO `
+      FullRepositoryId=YOUR_USER/YOUR_REPO `
       BranchName=main `
       EnableManualApproval=true `
   --capabilities CAPABILITY_NAMED_IAM `
   --region eu-west-2
 ```
 
-Vérifie :
+Verify:
 
 ```powershell
 aws codepipeline get-pipeline `
@@ -572,9 +639,9 @@ aws codepipeline get-pipeline `
   --output table
 ```
 
-Tu dois retrouver les stages définis par ton template.
+You should see the stages defined in your template.
 
-Puis :
+Then:
 
 ```powershell
 aws deploy get-application `
@@ -582,7 +649,7 @@ aws deploy get-application `
   --region eu-west-2
 ```
 
-Et :
+And:
 
 ```powershell
 aws deploy get-deployment-group `
@@ -592,13 +659,13 @@ aws deploy get-deployment-group `
   --query "deploymentGroupInfo.{Group:deploymentGroupName,ServiceRole:serviceRoleArn,Controller:deploymentStyle.deploymentType}"
 ```
 
-Le CDC demande CodeDeploy + Blue/Green + traffic shift **10 → 50 → 100 %**. 
+The CDC requires CodeDeploy + Blue/Green with a **10 → 50 → 100%** traffic shift.
 
 ---
 
-# 13. Le test qui prouve réellement le CI/CD
+# 14. The test that actually proves CI/CD works
 
-Ne fais **qu'un seul** build/pipeline.
+Run **only one** build/pipeline execution.
 
 ```powershell
 aws codepipeline start-pipeline-execution `
@@ -606,7 +673,7 @@ aws codepipeline start-pipeline-execution `
   --region eu-west-2
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws codepipeline get-pipeline-state `
@@ -616,7 +683,7 @@ aws codepipeline get-pipeline-state `
   --output table
 ```
 
-### Tu veux voir
+### You want to see
 
 ```text
 Source       Succeeded
@@ -625,9 +692,9 @@ Build        Succeeded
 Deploy       Succeeded
 ```
 
-Le CDC exige notamment que le push `main` déclenche le pipeline en moins de 60 s, que les tests en échec bloquent le pipeline, et que l'ancienne version reste disponible pendant le traffic shift. 
+The CDC requires that a push to `main` triggers the pipeline in under 60 seconds, that failing tests block the pipeline, and that the previous version stays available during the traffic shift.
 
-Pour le vrai test automatique :
+For the real, automatic trigger test:
 
 ```text
 git add .
@@ -635,7 +702,7 @@ git commit -m "test CI/CD AWS"
 git push origin main
 ```
 
-Puis immédiatement :
+Then immediately:
 
 ```powershell
 aws codepipeline get-pipeline-state `
@@ -645,15 +712,82 @@ aws codepipeline get-pipeline-state `
   --output table
 ```
 
+## Troubleshooting: Build fails at the SAST (Semgrep) step
+
+**Symptom:** the pipeline's Build stage (or the `.github/workflows/ci.yml` "SAST (Semgrep)" job) fails. The log shows Semgrep's scan summary ending in something like:
+
+```text
+✅ Scan completed successfully.
+ • Findings: 1 (1 blocking)
+Ran 242 rules on 12 files: 1 finding.
+Error: Process completed with exit code 1.
+```
+
+**Why:** `buildspec.yml` and `ci.yml` both run `semgrep --config auto --error ...`. The `--error` flag fails the build on **any** finding, regardless of that rule's own severity label (INFO/WARNING/ERROR are just metadata — `--error` doesn't filter by them). In this app, that one finding was Semgrep's built-in `express-check-csurf-middleware-usage` audit rule (an INFO-level suggestion, not an actual vulnerability here). The rule always matches the `const app = express()` initialization line — never the individual route handlers.
+
+**This took two fixes to actually resolve**, both in `task-manager/src/app.js`:
+1. An earlier suppression comment sat above the `/add`/`/toggle`/`/delete` routes instead of above `const app = express()` — wrong line, so it silently matched nothing.
+2. After moving it to the right line, it *still* failed, because the rule's real `check_id` isn't the path-derived name you'd expect from its registry page (`javascript.express.security.audit.express-check-csurf-middleware-usage`) — Semgrep appends the rule's own `id:` field a second time, so the actual id is `javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage`. A `// nosemgrep: <id>` comment has to match that exact string or it's a silent no-op — Semgrep doesn't warn you that your suppression matched nothing.
+
+**How this was verified**, since the console summary never shows the rule id and the failed run's log/artifact both require GitHub auth to fetch: installed Semgrep in WSL (`pip install semgrep`, same 1.173.0 version CI uses) and ran the identical `semgrep --config auto --error --json --output semgrep-report.json .` from `task-manager/` directly against the working tree. The JSON's `results[].check_id` field is the ground truth for the exact string a `nosemgrep:` comment must match. **Lesson for next time:** if you're not sure a `nosemgrep:<id>` suppression is actually taking effect, don't trust the id shown on the rule's semgrep.dev page — run Semgrep locally (WSL if on Windows; the CLI has no native Windows build) and read `check_id` straight from the JSON output before pushing.
+
+**If a different or additional finding shows up:** the console summary only prints finding *counts*, never the rule id/file/line/message — that detail only exists in `semgrep-report.json`. To read it:
+- **Locally:** run the command above and open the JSON, or skip `--output` and read `results[].check_id` / `.path` / `.start.line` / `.extra.message` directly.
+- **CodeBuild:** `buildspec.yml` already `cat`s that file to the build log (CloudWatch Logs, PRE_BUILD phase) whenever the gate fails — just scroll to the `pre_build` section of the failed build's log.
+- **GitHub Actions:** download the `test-reports` artifact from the failed run's summary page and open `semgrep-report.json` inside it (requires being logged in).
+
+## Troubleshooting: Build fails at the `docker push` step with "tag invalid: ... already exists"
+
+**Symptom:** the Build stage fails at `POST_BUILD`, on the `docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"` command, even on a **brand-new commit** whose SHA-tag was never pushed before:
+
+```text
+tag invalid: The image tag '<sha>' already exists in the 'taskmanager-dev' repository
+and cannot be overwritten because the tag is immutable.
+```
+
+**Why:** this was a real, repeatable bug hit on 2026-08-14, not a one-off. Checking ECR's own `imagePushedAt` timestamp against the build's failure timestamp showed the image had **already landed in ECR seconds before** `docker push` reported failure — the push actually succeeded server-side, but the CLI (CodeBuild's `standard:7.0` image ships a BuildKit-based Docker engine) still exited non-zero against the repo's `IMMUTABLE` tag policy. This is a known, unfixed BuildKit/ECR interaction: [moby/buildkit#3776](https://github.com/moby/buildkit/issues/3776), closed by the maintainers as "not planned." It happened on every single build, not just re-runs of an old commit — don't waste time pushing empty commits to "get a fresh tag," that doesn't help.
+
+**Fix:** the ECR repo is `MUTABLE` now (see step 5) — that's the actual fix, already applied. If you ever consider switching back to `IMMUTABLE` for stronger traceability, know that it will bring this exact failure back on every build. It doesn't cost real traceability here: `IMAGE_TAG` is always the commit SHA, so a given tag is only ever pushed once with the same content anyway.
+
 ---
 
-# 14. Autoscaling
+## Troubleshooting: Build fails at the ECR scan-gate step (`SCAN ECR`)
 
-Pour économiser :
+**Symptom 1 — `AccessDeniedException: ... inspector2:ListCoverage` or `...inspector2:ListFindings`.**
+**Why:** this account's ECR registry uses Enhanced Scanning (Amazon Inspector v2), not Basic Scanning (confirm with `aws inspector2 batch-get-account-status`, see step 5). Under Enhanced Scanning, `ecr describe-image-scan-findings` and the old `ecr wait image-scan-complete` both proxy to Inspector v2 APIs, which need their own permissions in the CodeBuild role — `ecr:DescribeImageScanFindings` alone isn't enough.
+**Fix:** already added to `codebuild.yaml` (see step 7's note). If you rebuild the IAM policy from scratch, both `inspector2:ListCoverage` and `inspector2:ListFindings` (with `Resource: "*"`) are required.
+
+**Symptom 2 — the build hangs or fails on `aws ecr wait image-scan-complete` with `ScanNotFoundException`, even with the permissions above fixed.**
+**Why:** the `image-scan-complete` waiter polls for `imageScanStatus.status == COMPLETE`. That status only exists under **Basic** Scanning. Under **Enhanced Scanning in continuous mode** (this account), the status stays `ACTIVE` ("Continuous scan is selected for image") forever, and the API returns `ScanNotFoundException` for the first minute or so after a push while Inspector ingests the image — the waiter treats both as fatal, so the gate could never pass.
+**Fix:** `buildspec.yml`'s `POST_BUILD` phase no longer uses the waiter. It polls `describe-image-scan-findings` directly (up to 30 attempts, 10s apart), accepting either `ACTIVE` or `COMPLETE` **and** requiring `imageScanFindings.imageScanCompletedAt` to be present (status alone can appear before findings are actually populated — trusting status alone would let a still-empty scan through as "zero vulnerabilities" by mistake). Already applied; nothing to change unless AWS alters this behavior again.
+
+**Symptom 3 — the gate blocks the build with `N vulnerabilite(s) CRITICAL -> deploiement bloque`.**
+**Why:** that's the gate doing its job (US-05), not a bug. On 2026-08-14 the `task-manager` image (node:20-alpine base) carried 2 CRITICAL + 30 HIGH CVEs (per the ECR/Inspector v2 scan). All of them traced to two sources, confirmed with a local Trivy scan: the globally-bundled `npm`/`npx`/`corepack` CLI tools (never invoked in production — the container only runs `node server.js`), and 2 unpatched Alpine OS packages (OpenSSL). None were in the app's own dependencies (`task-manager/package.json`), which came back clean both times.
+**Fixed (2026-08-15, `task-manager/Dockerfile`, commit `ed352c1`):** `apk upgrade --no-cache` picks up the Alpine patch; `rm -rf` on npm/npx/corepack and their `/usr/local/lib/node_modules` entries removes the bundled CLI tools after `npm ci --omit=dev` (which still needs them) completes. Rescanned locally with Trivy afterward: **0 findings of any severity**, either target. Image size barely moved (47.6 → 50.2 MB via `docker inspect`, still well under the 200 MB target), and the app still passes its health check.
+**Confirmed against the real scan (2026-08-15):** redeployed just `secrets` + `ecr` + `codebuild` (no VPC/ALB/ECS needed — see the standalone-build tip below) and ran `codebuild start-build` against the current GitHub source. Real Inspector v2 result: `CRITICAL=0 HIGH=0 MEDIUM=1 LOW=0` (even cleaner than the local Trivy scan, which found 0 across every severity). Full chain verified end-to-end: Docker build → push → Inspector scan → gate check → `BUILD SUCCEEDED`. This is the first fully green CodeBuild run this project has had.
+
+**Tip — iterate on `buildspec.yml` without paying for the full stack:** `taskmanager-dev-build`'s CodeBuild project has `Source: GITHUB` + `Artifacts: NO_ARTIFACTS` and no `VpcConfig`, so it can run standalone, independent of the pipeline, ALB, ECS, or even the VPC stack:
+
+```powershell
+aws codebuild start-build --project-name taskmanager-dev-build --region eu-west-2
+```
+
+```powershell
+aws codebuild batch-get-builds --ids <build-id> --region eu-west-2 `
+  --query "builds[0].{Status:buildStatus,Phase:currentPhase}" --output table
+```
+
+This exercises the entire buildspec — SAST, tests, coverage, Docker build, ECR push, and the scan gate — against whatever's on the branch right now. Only `ecr`, `codebuild`, `secrets`, and `iam` need to be deployed for this to work. Use it to debug a buildspec change before spending a full pipeline execution (or the NAT/ALB cost of having the rest of the stack up) on it.
+
+---
+
+# 15. Autoscaling
+
+To save cost:
 
 ```powershell
 aws cloudformation deploy `
-  --template-file infrastructure/cloudformation/ecs-autoscaling.yml `
+  --template-file infrastructure/cloudformation/ecs-autoscaling.yaml `
   --stack-name taskmanager-dev-autoscaling `
   --parameter-overrides `
       ProjectName=taskmanager `
@@ -665,7 +799,7 @@ aws cloudformation deploy `
   --region eu-west-2
 ```
 
-Vérifie :
+Verify:
 
 ```powershell
 aws application-autoscaling describe-scalable-targets `
@@ -676,17 +810,17 @@ aws application-autoscaling describe-scalable-targets `
   --output table
 ```
 
-### Attendu
+### Expected
 
 ```text
 1    2
 ```
 
-Cela couvre l'exigence HPA-like du CDC. 
+This covers the CDC's HPA-like requirement.
 
 ---
 
-# 15. Observabilité
+# 16. Observability
 
 ```powershell
 aws cloudformation deploy `
@@ -695,12 +829,12 @@ aws cloudformation deploy `
   --parameter-overrides `
       ProjectName=taskmanager `
       Environment=dev `
-      AlarmEmail=TON_EMAIL `
+      AlarmEmail=YOUR_EMAIL `
   --capabilities CAPABILITY_NAMED_IAM `
   --region eu-west-2
 ```
 
-Vérifie :
+Verify:
 
 ```powershell
 aws cloudwatch describe-alarms `
@@ -710,7 +844,7 @@ aws cloudwatch describe-alarms `
   --output table
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws logs describe-log-groups `
@@ -719,17 +853,17 @@ aws logs describe-log-groups `
   --output table
 ```
 
-### Attendu
+### Expected
 
-Rétention :
+Retention:
 
 ```text
 30
 ```
 
-Le CDC demande logs centralisés avec rétention 30 jours, dashboard CloudWatch, métriques pipeline et alarme >15 min. 
+The CDC requires centralized logs with 30-day retention, a CloudWatch dashboard, pipeline metrics, and an alarm for pipelines running over 15 minutes.
 
-Et confirme le mail SNS :
+And confirm the SNS email subscription:
 
 ```powershell
 aws sns list-subscriptions `
@@ -738,41 +872,41 @@ aws sns list-subscriptions `
   --output table
 ```
 
-Si tu reçois **AWS Notification – Subscription Confirmation**, clique dessus.
+If you receive **AWS Notification – Subscription Confirmation**, click it.
 
 ---
 
-# 16. CHECKLIST CDC — ce qui doit être visible
+# 17. CDC CHECKLIST — what needs to be visible
 
-| CDC                | Preuve à montrer                             |
-| ------------------ | -------------------------------------------- |
-| CloudFormation/IaC | 12 stacks `CREATE_COMPLETE`                  |
-| VPC/subnets/SG     | VPC console + Resource Map                   |
-| ECR                | repository + `ScanOnPush=true`               |
-| ECS Fargate        | service `ACTIVE`, tasks `RUNNING`            |
-| ALB                | DNS + target `healthy`                       |
-| Secrets            | secrets présents dans Secrets Manager        |
-| CodeBuild          | build `SUCCEEDED`                            |
-| Tests ≥80 %        | CodeBuild Reports / coverage                 |
-| SAST               | logs CodeBuild + étape SAST                  |
-| CodePipeline       | pipeline avec stages réussis                 |
-| GitHub trigger     | push `main` → pipeline                       |
-| CodeDeploy         | deployment Blue/Green                        |
-| 10→50→100          | écran Traffic shifting                       |
-| Rollback           | deployment échoué puis rollback              |
-| Autoscaling        | `Min=1 Max=2`                                |
-| CloudWatch         | dashboard                                    |
-| Logs               | `/ecs/...` et `/aws/codebuild/...`, 30 jours |
-| SNS                | email reçu                                   |
-| Alarme >15 min     | CloudWatch alarm                             |
+| CDC requirement    | Evidence to show                             |
+| ------------------ | --------------------------------------------- |
+| CloudFormation/IaC | 12 stacks `CREATE_COMPLETE`                   |
+| VPC/subnets/SG     | VPC console + Resource Map                    |
+| ECR                | repository + `ScanOnPush=true`                |
+| ECS Fargate        | service `ACTIVE`, tasks `RUNNING`             |
+| ALB                | DNS + target `healthy`                        |
+| Secrets            | secrets present in Secrets Manager            |
+| CodeBuild          | build `SUCCEEDED`                             |
+| Tests ≥80%         | CodeBuild Reports / coverage                  |
+| SAST               | CodeBuild logs + SAST step                    |
+| CodePipeline       | pipeline with succeeded stages                |
+| GitHub trigger     | push to `main` → pipeline runs                |
+| CodeDeploy         | Blue/Green deployment                         |
+| 10→50→100          | traffic-shifting screen                       |
+| Rollback           | failed deployment then rollback               |
+| Autoscaling        | `Min=1 Max=2`                                 |
+| CloudWatch         | dashboard                                     |
+| Logs               | `/ecs/...` and `/aws/codebuild/...`, 30 days  |
+| SNS                | email received                                |
+| Alarm >15 min      | CloudWatch alarm                              |
 
-Cette checklist correspond directement aux exigences fonctionnelles du CDC. 
+This checklist maps directly to the CDC's functional requirements.
 
 ---
 
-# 17. AVANT de dépasser 1 heure : SUPPRIMER TOUT
+# 18. BEFORE going over 1 hour: DELETE EVERYTHING
 
-**Ne supprime pas dans un ordre arbitraire.**
+**Do not delete in an arbitrary order.**
 
 ```powershell
 $stacks = @(
@@ -783,10 +917,10 @@ $stacks = @(
     "taskmanager-dev-taskdef",
     "taskmanager-dev-alb",
     "taskmanager-dev-ecs-cluster",
+    "taskmanager-dev-iam",
     "taskmanager-dev-codebuild",
     "taskmanager-dev-ecr",
     "taskmanager-dev-secrets",
-    "taskmanager-dev-iam",
     "taskmanager-dev-vpc"
 )
 
@@ -802,11 +936,49 @@ foreach ($s in $stacks) {
 }
 ```
 
-L'ordre inverse est nécessaire à cause des `Fn::ImportValue`. 
+The reverse order is required because of the `Fn::ImportValue` dependencies between stacks.
+
+### If `taskmanager-dev-vpc` ends up `DELETE_FAILED`
+
+**Symptom:** `describe-stack-events` shows `PrivateSubnet1`/`PrivateSubnet2` failed to delete with `"has dependencies and cannot be deleted"`.
+
+**Why:** if GuardDuty is enabled on this account, it auto-creates a `com.amazonaws.<region>.guardduty-data` interface VPC endpoint inside every VPC it monitors (tagged `GuardDutyManaged: true`). It isn't part of any CloudFormation stack, so CFN can't remove it, and its ENIs pin the private subnets.
+
+**Fix:** find and delete it, then retry the stack delete.
+
+```powershell
+aws ec2 describe-vpc-endpoints `
+  --region eu-west-2 `
+  --filters "Name=service-name,Values=com.amazonaws.eu-west-2.guardduty-data" `
+  --query "VpcEndpoints[?VpcId=='<taskmanager-vpc-id>'].VpcEndpointId" `
+  --output text
+```
+
+```powershell
+aws ec2 delete-vpc-endpoints --region eu-west-2 --vpc-endpoint-ids <id-from-above>
+```
+
+Wait ~1-2 minutes for the ENIs to detach, then re-run the `delete-stack` / `wait stack-delete-complete` pair from above for `taskmanager-dev-vpc`.
+
+**If it then fails a second time, on the `Vpc` resource itself** ("has dependencies and cannot be deleted"), check for a leftover **GuardDuty-managed security group** — GuardDuty creates one alongside its VPC endpoint (named `GuardDutyManagedSecurityGroup-<vpc-id>`), and AWS won't delete a VPC while any non-default security group still exists in it, even an unattached one:
+
+```powershell
+aws ec2 describe-security-groups --region eu-west-2 `
+  --filters "Name=vpc-id,Values=<taskmanager-vpc-id>" `
+  --query "SecurityGroups[?GroupName!='default'].{Id:GroupId,Name:GroupName}" --output table
+```
+
+```powershell
+aws ec2 delete-security-group --region eu-west-2 --group-id <id-from-above>
+```
+
+Then retry `delete-stack` / `wait stack-delete-complete` once more.
+
+**Caution — don't touch VPCs you don't recognize.** While hunting this endpoint, it's easy to `describe-vpc-endpoints`/`describe-vpcs` and see *other* VPCs in the account with a similar `10.0.0.0/16` CIDR. That CIDR match is a coincidence, not a sign they're related to this project — check each VPC's `Name` tag before deleting anything on it. This account has at least one unrelated VPC (tagged `smartovate-cicd-vpc`) that must be left alone.
 
 ---
 
-# 18. Contrôle final — IMPORTANT
+# 19. Final check — IMPORTANT
 
 ```powershell
 aws cloudformation list-stacks `
@@ -816,7 +988,7 @@ aws cloudformation list-stacks `
   --output table
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws ec2 describe-nat-gateways `
@@ -826,7 +998,7 @@ aws ec2 describe-nat-gateways `
   --output table
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws elbv2 describe-load-balancers `
@@ -835,7 +1007,7 @@ aws elbv2 describe-load-balancers `
   --output table
 ```
 
-Puis :
+Then:
 
 ```powershell
 aws ecs list-tasks `
@@ -843,34 +1015,40 @@ aws ecs list-tasks `
   --region eu-west-2
 ```
 
-### Objectif final
+### Final goal
 
 ```text
-Stacks taskmanager-dev : aucune
-NAT Gateway available : aucune
-ALB taskmanager : aucun
-ECS running tasks : aucune
+taskmanager-dev stacks: none
+Available NAT Gateways: none
+taskmanager ALBs: none
+Running ECS tasks: none
 ```
-
-Le guide donne le même principe de contrôle final. 
 
 ---
 
-## Les 3 choses à surveiller particulièrement
+## The 4 things to watch most closely
 
-**1. ECR `IMMUTABLE` + `latest`**
-C'est le problème déjà identifié dans ton guide. Pour le test d'aujourd'hui, fais un seul build. 
+**1. Secrets Manager's recovery window *can* block a fast redeploy — but a plain `delete-stack` teardown of `taskmanager-dev-secrets` has NOT reproduced this so far.**
+The general risk is real and well-documented: `AWS::SecretsManager::Secret` normally holds a deleted secret's name for a recovery window (default ~30 days) before it's reusable, and `secrets-manager.yaml` sets no `RecoveryWindowInDays`/force-delete property to skip that. If it happens, redeploying the stack soon after a teardown fails with `... already scheduled for deletion`, and the fix is:
+```powershell
+aws secretsmanager delete-secret --secret-id taskmanager/dev/db --force-delete-without-recovery --region eu-west-2
+aws secretsmanager delete-secret --secret-id taskmanager/dev/api-key --force-delete-without-recovery --region eu-west-2
+```
+**However**, re-verified on 2026-08-15 with a controlled test (deploy `secrets` alone → `delete-stack` → immediately `describe-secret`): both secrets came back `ResourceNotFoundException` right away, not "pending deletion" — i.e. a full stack *deletion* purged them immediately, three separate times this session, with no explicit force-delete step. This suggests CloudFormation's own deletion path for this resource type may already delete without the recovery window by default (undocumented, not something this template configures). The scenario the force-delete commands above still protect against: a **stack update that replaces** the secret resource (rather than a full stack delete), or a secret deleted directly via console/CLI outside of CloudFormation — both go through the standard Secrets Manager API default, which does keep the recovery window. Keep the force-delete commands in your back pocket for those cases; don't assume you need to run them after an ordinary full teardown of this stack.
 
 **2. GitHub Connection = `AVAILABLE`**
-Ne lance pas le pipeline tant que ce n'est pas `AVAILABLE`.
+Don't start the pipeline until this shows `AVAILABLE`.
 
-**3. Ne laisse surtout pas le NAT Gateway après le test.**
-C'est le principal coût permanent indiqué dans ton guide. 
+**3. Never leave the NAT Gateway running after the test.**
+It's the main ongoing cost called out throughout this guide.
 
-### Approches
+**4. GuardDuty can leave `taskmanager-dev-vpc` stuck in `DELETE_FAILED`.**
+See step 18's dedicated troubleshooting note — delete the auto-created `guardduty-data` VPC endpoint, then retry.
 
-* **Recommandée maintenant :** tout déployer → 1 pipeline réussi → vérifier CDC → supprimer tout.
-* **Budget minimal :** arrêter après ECS + ALB, mais tu ne démontres pas le CI/CD complet.
-* **Démonstration maximale :** ajouter un deuxième déploiement et provoquer un rollback ; utile uniquement si tu dois réellement montrer le mécanisme Blue/Green/rollback.
+### Approaches
 
-**Prochaine étape immédiate : exécute uniquement les étapes 0 → 2 (SSO, région, absence de stacks, validation des 12 YAML). Ne lance aucun déploiement tant que les 12 `validate-template` ne sont pas OK.**
+* **Recommended for now:** deploy everything → 1 successful pipeline run → verify against the CDC checklist → delete everything.
+* **Minimal budget:** stop after ECS + ALB, but then you haven't demonstrated the full CI/CD flow.
+* **Maximum demonstration:** add a second deployment and trigger a rollback; only useful if you actually need to show the Blue/Green/rollback mechanism.
+
+**Immediate next step (as of 2026-08-15):** all three CodeBuild-stage bugs (immutable-tag false failure, broken scan waiter, missing Inspector IAM permissions) plus the Dockerfile CVE fix are committed **and confirmed working end-to-end via a standalone `codebuild start-build`** against the real account (`CRITICAL=0 HIGH=0`, `BUILD SUCCEEDED` — see this section's Symptom 3). Only `secrets`/`ecr`/`codebuild` were deployed for that test; `vpc`/`iam`/`ecs-*`/`alb`/`pipeline`/`autoscaling`/`observability` are still torn down. Next real test: deploy the remaining stacks (steps 3, 8-16) and run an actual pipeline execution — this should be the first run to ever reach Approval/Deploy, which is still genuinely untested territory (CodeDeploy Blue/Green, the traffic shift, ECS/ALB health).
