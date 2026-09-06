@@ -14,6 +14,16 @@ const express = require('express');
 const tasks = require('./tasks');
 const { renderIndex } = require('./views');
 
+// La règle d'audit CSRF de Semgrep (express-check-csurf-middleware-usage)
+// s'ancre TOUJOURS sur cette ligne d'initialisation express(), jamais sur les
+// routes individuelles — d'où la suppression ici et pas plus bas. Cette
+// application n'a ni session ni cookie d'authentification sur lequel une
+// requête forgée depuis un autre site pourrait s'appuyer : la protection CSRF
+// ne s'applique donc pas (voir les routes POST plus bas, que la règle
+// signalerait sinon).
+// Le check_id est volontairement "doublé" : c'est l'identifiant réel émis par
+// Semgrep, celui qu'un `nosemgrep` doit reprendre à l'identique.
+// nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage
 const app = express();
 
 // express.json pour l'API, express.urlencoded pour les formulaires HTML
