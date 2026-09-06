@@ -35,3 +35,6 @@ taskdef.rendered.json
 **/taskdef.rendered.json
 imageDetail.json
 **/imageDetail.json
+# Modules develop : etat runtime de l orchestrateur
+.orchestrator-state.json
+__pycache__/
