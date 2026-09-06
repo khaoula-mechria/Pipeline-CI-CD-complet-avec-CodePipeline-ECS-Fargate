@@ -1,0 +1,22 @@
+# Dependances des modules ajoutes sur la branche develop
+# (orchestrator, optimizer, explainer, dashboard).
+#
+# Installation :  pip install -r requirements-modules.txt
+#
+# N'affecte pas le pipeline CI/CD existant : l'application deployee reste
+# Node.js/Express, ces paquets ne servent qu'aux outils locaux.
+
+# Module 1 — orchestrateur de deploiement
+boto3>=1.42
+networkx>=3.6
+PyYAML>=6.0
+
+# Module 3 — couche d'explication LLM
+anthropic>=1.4
+
+# Module 4 — dashboard local
+streamlit>=1.63
+
+# Tests
+pytest>=9.0
+pydot>=4.0      # relecture du DOT genere ; les tests le sautent s'il est absent
