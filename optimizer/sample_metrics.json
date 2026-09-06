@@ -1,0 +1,28 @@
+{
+  "cluster_name": "taskmanager-dev-cluster",
+  "service_name": "taskmanager-dev-service",
+  "window_days": 14,
+  "start": "2026-08-23T09:00:00+00:00",
+  "end": "2026-09-06T09:00:00+00:00",
+  "cpu": {
+    "name": "CPUUtilization",
+    "average": 11.4,
+    "maximum": 38.2,
+    "p95": 24.7,
+    "datapoints": 4032
+  },
+  "memory": {
+    "name": "MemoryUtilization",
+    "average": 26.8,
+    "maximum": 41.5,
+    "p95": 33.1,
+    "datapoints": 4032
+  },
+  "desired_count": 2,
+  "running_count": 2,
+  "task_cpu_units": 256,
+  "task_memory_mb": 512,
+  "service_arn": null,
+  "source": "sample",
+  "note": "Jeu de metriques d'EXEMPLE pour demonstration hors ligne. Ne correspond a aucune mesure reelle."
+}
