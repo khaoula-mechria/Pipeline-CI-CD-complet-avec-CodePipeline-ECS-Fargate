@@ -1,8 +1,17 @@
-Oui. Pour ton projet, le test le plus propre est :
+# Tester le rollback automatique Blue/Green
 
-**déploiement #1 sain → déploiement #2 volontairement non sain → CodeDeploy détecte l'échec du health check → rollback automatique → Blue reste en production.**
+Procedure pour prouver, sur le vrai compte AWS, que CodeDeploy detecte un
+deploiement defaillant et rebascule automatiquement sur la version precedente.
 
-C'est exactement le scénario demandé par le CDC : Blue/Green, traffic shifting 10 % → 50 % → 100 %, et rollback automatique en cas d'échec des health checks. 
+Scenario : **deploiement #1 sain -> deploiement #2 volontairement non sain ->
+CodeDeploy detecte l'echec du health check -> rollback automatique -> BLUE
+reste en production.**
+
+C'est le scenario demande par le cahier des charges (F3) : Blue/Green, traffic
+shifting progressif, et rollback automatique en cas d'echec des health checks.
+
+> Prerequis : l'infrastructure doit etre deployee (voir [`../guideme2.md`](../guideme2.md)).
+> Commencer par l'etape 1, qui verifie que l'auto-rollback est bien actif.
 
 ## 1. D'abord : vérifier que l'auto-rollback est réellement activé
 
@@ -47,7 +56,7 @@ aws deploy get-deployment-group `
 
 ---
 
-# 2. Prouver que la version 1 est saine
+## 2. Prouver que la version 1 est saine
 
 Avant de casser volontairement la V2 :
 
@@ -99,7 +108,7 @@ Le guide confirme que le service ECS utilise `DeploymentController: CODE_DEPLOY`
 
 ---
 
-# 3. Créer volontairement une V2 qui échoue au health check
+## 3. Créer volontairement une V2 qui échoue au health check
 
 C'est la méthode que je recommande.
 
@@ -141,7 +150,7 @@ git push origin main
 
 ---
 
-# 4. Regarder le pipeline
+## 4. Regarder le pipeline
 
 Immédiatement :
 
@@ -188,7 +197,7 @@ $deploymentId
 
 ---
 
-# 5. Suivre le rollback en temps réel
+## 5. Suivre le rollback en temps réel
 
 ```powershell
 aws deploy get-deployment `
@@ -220,7 +229,7 @@ Le CDC définit précisément ce scénario : si les health checks échouent pend
 
 ---
 
-# 6. Vérifier les target groups Blue / Green
+## 6. Vérifier les target groups Blue / Green
 
 C'est une **preuve très importante**.
 
@@ -249,7 +258,7 @@ Le guide confirme que l'ALB possède deux target groups, **Blue et Green**, ains
 
 ---
 
-# 7. La preuve la plus forte : vérifier que Blue revient en production
+## 7. La preuve la plus forte : vérifier que Blue revient en production
 
 Après le rollback :
 
@@ -282,7 +291,7 @@ C'est essentiel : **la V2 est rejetée, mais l'application V1 reste disponible.*
 
 ---
 
-# 8. Vérifier l'état ECS après rollback
+## 8. Vérifier l'état ECS après rollback
 
 ```powershell
 aws ecs describe-services `
@@ -307,7 +316,7 @@ aws ecs list-tasks `
 
 ---
 
-# 9. Vérifier précisément pourquoi la V2 a été rejetée
+## 9. Vérifier précisément pourquoi la V2 a été rejetée
 
 ```powershell
 aws deploy get-deployment `
@@ -337,7 +346,7 @@ aws logs tail /ecs/taskmanager-dev `
 
 ---
 
-# 10. Console AWS : les 3 écrans à capturer
+## 10. Console AWS : les 3 écrans à capturer
 
 ### A. CodePipeline
 
@@ -395,7 +404,7 @@ Desired: 1
 
 ---
 
-# 11. Attention : ton test `/health = 500` peut échouer avant le traffic shift
+## 11. Attention : ton test `/health = 500` peut échouer avant le traffic shift
 
 C'est normal.
 
@@ -417,7 +426,7 @@ Une deuxième approche consiste à provoquer une défaillance **après que Green
 
 ---
 
-# 12. Restaurer immédiatement l'application
+## 12. Restaurer immédiatement l'application
 
 Une fois la preuve obtenue :
 
@@ -469,4 +478,5 @@ Le CDC demande explicitement le test d'un rollback automatique par simulation d'
 2. **Arrêter volontairement une tâche Green** : utile si tu veux provoquer une panne runtime, mais plus difficile à synchroniser.
 3. **Alarme CloudWatch pendant le traffic shift** : meilleure démonstration avancée, mais seulement si ton CodeDeploy est configuré pour utiliser cette alarme.
 
-**À faire maintenant : avant de modifier GitHub, exécute la commande de l'étape 1 et donne-moi exactement la sortie de `autoRollbackConfiguration`.** C'est elle qui détermine si ton infrastructure actuelle est réellement prête pour le test de rollback.
+> L'etape 1 est le point de depart : sa sortie `autoRollbackConfiguration`
+> determine si l'infrastructure est reellement prete pour ce test.

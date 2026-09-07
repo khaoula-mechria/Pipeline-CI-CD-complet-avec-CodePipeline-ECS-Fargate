@@ -1,5 +1,4 @@
-# Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate
-# Pipeline CI/CD complet avec AWS CodePipeline, ECS Fargate
+# Pipeline CI/CD complet avec AWS CodePipeline et ECS Fargate
 
 Ce projet démontre la mise en place d’un pipeline **CI/CD complet** pour une
 application web conteneurisée (**Node.js / Express**, interface HTML) en
@@ -25,12 +24,20 @@ Automatiser le cycle de livraison d’une application conteneurisée :
 
 ## ✅ État actuel — ce qui est fait, ce qui ne l'est pas
 
-*(Mis à jour le 2026-08-14. Détail exhaustif exigence par exigence dans
+*(Mis à jour le 2026-09-07. Détail exhaustif exigence par exigence dans
 [`CONFORMITE_CDC.md`](CONFORMITE_CDC.md), journal chronologique complet dans
-[`so-far.md`](so-far.md).)*
+[`so-far.md`](so-far.md), preuves du run réel dans [`rapport.md`](rapport.md).)*
 
 ### Fait
 
+- **Un run end-to-end réel a réussi sur AWS** : push GitHub → CodePipeline →
+  CodeBuild (SAST, tests, image) → ECR → scan Inspector v2 → approbation
+  manuelle → CodeDeploy Blue/Green → ECS Fargate, avec bascule de 100 % du
+  trafic vers GREEN derrière l'ALB. Déroulé détaillé dans
+  [`rapport.md`](rapport.md), 17 captures dans [`preuves/`](preuves/).
+- **Stage `ManualApproval`** présent et conditionnel (paramètre
+  `EnableManualApproval` de `pipeline.yml`) — vu en fonctionnement pendant le
+  run réel (`preuves/01-pipeline-mid-run-approval.png`).
 - **Infrastructure** : les 12 stacks CloudFormation sont écrites, `cfn-lint`
   propre, et le graphe d'exports/imports entre stacks est cohérent de bout en
   bout (VPC → Secrets Manager → ECR → CodeBuild → IAM → cluster/ALB/task
@@ -40,12 +47,12 @@ Automatiser le cycle de livraison d’une application conteneurisée :
 - **Application** (`task-manager/`, Node.js/Express) : liste, ajout,
   édition, bascule, suppression, recherche plein texte, filtres
   (statut/priorité) et tri (récence/échéance/priorité/titre), échéances
-  optionnelles avec indicateur de retard. 61 tests (Jest + Supertest),
+  optionnelles avec indicateur de retard. 63 tests (Jest + Supertest),
   couverture ~99 % (lignes/branches), seuil bloquant à 80 %.
 - **Quality gates** : SAST (Semgrep) bloquant sur `main` et sur PR (vérifié
   empiriquement dans les deux sens sur GitHub Actions : bloque un vrai
   finding, puis passe une fois corrigé), image Docker multi-stage mesurée à
-  48 Mo (cible < 200 Mo), scan de vulnérabilités ECR exploité (bloque sur
+  50,2 Mo (cible < 200 Mo), scan de vulnérabilités ECR exploité (bloque sur
   CRITICAL, notifie sans bloquer sur HIGH).
 - **Secrets** injectés via Secrets Manager (jamais en clair) ; **autoscaling**
   Target Tracking CPU à 70 % (2 à 6 tâches) ; **observabilité** : dashboard
@@ -64,21 +71,17 @@ Automatiser le cycle de livraison d’une application conteneurisée :
 
 ### Pas fait, ou connu et non bloquant
 
-- **Aucun déploiement AWS réel n'a encore réussi de bout en bout** — c'est le
-  seul point vraiment bloquant. Tout ce qui précède est validé par
-  `cfn-lint`, par LocalStack (dans la limite de ses services Pro-only : ALB,
-  ECS, CodeDeploy, CodePipeline, CodeBuild et CodeStar Connections ne sont
-  pas émulés), et par lecture statique très poussée — jamais encore par une
-  exécution réelle du pipeline sur un compte AWS.
 - Traffic shift en rampe linéaire (`ECSLinear10PercentEvery1Minute`) plutôt
   qu'en paliers exacts 10 % → 50 % → 100 % : AWS n'offre pas de configuration
   CodeDeploy ECS prédéfinie avec ces paliers précis, c'est l'équivalent le
   plus proche.
-- Pas de stage `ManualApproval` : l'état « approval pending » de F4 n'a donc
-  rien à notifier pour l'instant (la permission SNS correspondante est déjà
-  prévue dans `iam.yaml`, en attente de ce stage).
+- Une image `:latest` doit être poussée manuellement **une fois** avant le
+  premier déploiement du service ECS : `ecs-task-definition.yaml` s'appuie sur
+  ce tag tant que le pipeline n'a jamais tourné (bootstrap, voir `rapport.md`).
 - Pas de notification distincte « rollback completed » (seuls les états
-  génériques du pipeline sont notifiés).
+  génériques du pipeline sont notifiés). La procédure de test du rollback est
+  décrite dans [`docs/rollback-testing.md`](docs/rollback-testing.md), mais
+  n'a pas encore été exécutée sur le compte réel.
 - Protection de branche GitHub pas encore activée — réglage à faire dans les
   paramètres du dépôt GitHub, pas dans le code.
 - Le store de tâches reste en mémoire (choix assumé, voir l'en-tête de
@@ -97,8 +100,8 @@ Tout le code applicatif vit dans [`task-manager/`](task-manager/) — c'est la
 | `src/app.js` | Routes Express : `/` (UI HTML, avec recherche/filtres/tri en query string), `/add`, `/edit/:id`, `/toggle/:id`, `/delete/:id`, `/api/tasks`, `/health` |
 | `src/tasks.js` | Store des tâches, en mémoire (voir le commentaire d'en-tête pour le pourquoi) — CRUD complet, filtrage et tri |
 | `src/views.js` | Rendu HTML sans moteur de template (zéro dépendance ajoutée) — barre de recherche/filtres, formulaire d'édition par tâche |
-| `tests/` | 61 tests Jest + Supertest — couverture ~99 %, seuil bloquant à 80 % |
-| `Dockerfile` | Build multi-stage, utilisateur non-root, `HEALTHCHECK` — image mesurée à **48 Mo** (cible < 200 Mo) |
+| `tests/` | 63 tests Jest + Supertest — couverture ~99 %, seuil bloquant à 80 % |
+| `Dockerfile` | Build multi-stage, utilisateur non-root, `HEALTHCHECK` — image mesurée à **50,2 Mo** (cible < 200 Mo) |
 | `buildspec.yml` | Phases CodeBuild : install → SAST → build → tests + push ECR |
 
 ```bash
@@ -118,15 +121,45 @@ et par `task-manager/buildspec.yml` dans CodeBuild.
 
 ---
 
-## 📐 Documentation & diagrammes d'architecture
+## 🛠️ Outils locaux (branche `develop`)
 
-Voir [`infrastructure/README.md`](infrastructure/README.md) pour la
-documentation complète de l'infrastructure : architecture AWS globale, flux
-de déploiement, flux du pipeline CodePipeline, rôles IAM, réseau (VPC), et
-déploiement Blue/Green — chacun avec un diagramme et une explication.
+Quatre modules Python qui s'ajoutent au pipeline **sans rien y remplacer**. Ils
+tournent en local ; le pipeline AWS ne dépend d'aucun d'eux.
 
-L'avancement du projet (ce qui est fait, testé, prochaine étape) est suivi
-dans [`so-far.md`](so-far.md), et la conformité au cahier des charges
-(exigence par exigence) dans [`CONFORMITE_CDC.md`](CONFORMITE_CDC.md).
+| Module | Rôle | Lancer |
+|---|---|---|
+| [`orchestrator/`](orchestrator/README.md) | Déploie les 12 stacks en **vagues parallèles**, l'ordre étant déduit des dépendances réelles entre templates (22 dépendances → 7 vagues au lieu de 12 étapes) | `python -m orchestrator graph` |
+| [`optimizer/`](optimizer/README.md) | Analyse le service ECS et compare une règle de rightsizing maison à **AWS Compute Optimizer** | `python -m optimizer analyze --sample` |
+| [`explainer/`](explainer/README.md) | Traduit le rapport précédent en explication lisible (API Anthropic), avec application **sous validation humaine explicite** | `python -m explainer explain --sample` |
+| [`dashboard/`](dashboard/README.md) | Tableau de bord Streamlit : graphe de déploiement en direct, optimisation, explication | `streamlit run dashboard/app.py` |
+
+```bash
+pip install -r requirements-modules.txt
+python -m pytest orchestrator/ optimizer/ explainer/ dashboard/   # 67 tests, hors ligne
+```
+
+Tous les tests tournent **sans AWS ni clé d'API**. Chaque module a son propre
+README avec la commande exacte et les variables d'environnement attendues.
+
+> À noter : `orchestrator` lit les templates de `infrastructure/cloudformation/`
+> et en déduit l'ordre de déploiement. C'est cette analyse qui fait autorité,
+> pas l'ordre écrit dans les guides — `guide.md` et `guideme2.md` placent tous
+> deux IAM avant CodeBuild, alors que `iam.yaml` importe l'export
+> `…-codebuild-arn` et exige donc l'inverse.
+
+---
+
+## 📚 Documentation — quel fichier sert à quoi
+
+| Document | Contenu | Quand le lire |
+|---|---|---|
+| [`guideme2.md`](guideme2.md) | Runbook de déploiement, étape par étape | Pour déployer sur AWS |
+| [`rapport.md`](rapport.md) | Preuve du run end-to-end réussi (+ [`preuves/`](preuves/)) | Pour vérifier ce qui a réellement tourné |
+| [`CONFORMITE_CDC.md`](CONFORMITE_CDC.md) | Conformité au cahier des charges, exigence par exigence | Pour l'évaluation |
+| [`so-far.md`](so-far.md) | Journal chronologique du projet | Pour l'historique des décisions |
+| [`infrastructure/README.md`](infrastructure/README.md) | Architecture AWS, réseau, IAM, Blue/Green — avec diagrammes | Pour comprendre l'infrastructure |
+| [`docs/rollback-testing.md`](docs/rollback-testing.md) | Procédure de test du rollback automatique | Pour prouver F3 |
+| [`infrastructure/scripts/README-tests-locaux.md`](infrastructure/scripts/README-tests-locaux.md) | Validation locale (cfn-lint, LocalStack) | Pour tester sans compte AWS |
+| [`guide.md`](guide.md) | Guide de déploiement d'origine, plus discursif | Archive — `guideme2.md` le remplace |
 
 ---
