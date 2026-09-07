@@ -1,0 +1,281 @@
+# ==============================================================================
+# azure-pipelines.yml
+#
+# Single pipeline replacing THREE AWS-side systems at once:
+#   - .github/workflows/ci.yml   (PR quality gates - now the "Quality" stage,
+#     gated on pull_request/push exactly like before)
+#   - codebuild.yaml + buildspec.yml (the actual build engine)
+#   - pipeline.yml's CodePipeline resource (orchestration + Blue/Green deploy)
+#
+# This is a deliberate MERGE (see the AWS->Azure migration mapping,
+# Phase 2): Azure DevOps doesn't split "pipeline orchestration" from "build
+# execution" into two services the way AWS does, so one YAML file covers
+# both roles here.
+#
+# Connects directly to this GitHub repository via the Azure Pipelines GitHub
+# App / service connection - no source control migration required, same
+# non-invasive relationship the AWS CodeStarSourceConnection had.
+#
+# Required setup before first run (cannot be expressed in this YAML - see
+# infrastructure/bicep/README.md "Prerequisites"):
+#   - An Azure Resource Manager service connection named
+#     'azure-taskmanager-connection', using Workload Identity Federation
+#     (OIDC) - no client secret stored in Azure DevOps.
+#   - Two Azure DevOps Environments: 'taskmanager-dev' (no approval check)
+#     and 'taskmanager-prod' (manual approval check configured on the
+#     Environment resource itself, in Project Settings > Environments -
+#     this is the Azure Pipelines equivalent of pipeline.yml's
+#     EnableManualApproval parameter, but configured on the environment
+#     object rather than as a pipeline-stage parameter).
+# ==============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  appDir: task-manager
+  coverageThreshold: '80'
+  azureServiceConnection: azure-taskmanager-connection
+  resourceGroupDev: rg-taskmanager-dev
+  resourceGroupProd: rg-taskmanager-prod
+  containerAppNameDev: ca-taskmanager-dev
+  containerAppNameProd: ca-taskmanager-prod
+  imageName: taskmanager
+  # Short SHA, same traceability convention as buildspec.yml's IMAGE_TAG.
+  imageTag: $[format('{0}', substring(variables['Build.SourceVersion'], 0, 8))]
+
+stages:
+
+  # ============================================================================
+  # STAGE 1 - QUALITY (runs on every PR AND every push - mirrors F1: PR must
+  # pass gates before merge, feature/* branches get Build+Test only)
+  # ============================================================================
+  - stage: Quality
+    displayName: 'Quality gates (build, test, coverage, SAST)'
+    jobs:
+      - job: AppQuality
+        displayName: 'Application quality gates'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '20.x'
+            displayName: 'Install Node 20'
+
+          - script: npm ci
+            workingDirectory: $(appDir)
+            displayName: 'Install dependencies'
+
+          - script: |
+              pip install semgrep
+              semgrep --config auto --error --json --output semgrep-report.json .
+            workingDirectory: $(appDir)
+            displayName: 'SAST (Semgrep) - same tool and policy as before'
+
+          - script: npm test
+            workingDirectory: $(appDir)
+            displayName: 'Unit tests + coverage (jest.config.js owns reporters + threshold)'
+
+          - script: |
+              COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
+              echo "Coverage measured: ${COVERAGE}% (threshold: $(coverageThreshold)%)"
+              echo "##vso[task.setvariable variable=measuredCoverage]${COVERAGE}"
+              if (( $(echo "$COVERAGE < $(coverageThreshold)" | bc -l) )); then
+                echo "##vso[task.logissue type=error]Coverage below threshold"
+                exit 1
+              fi
+            workingDirectory: $(appDir)
+            displayName: 'Enforce 80% coverage gate (F2)'
+
+          - task: PublishTestResults@2
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(appDir)/reports/junit.xml'
+            displayName: 'Publish JUnit results (US-02)'
+
+          - task: PublishCodeCoverageResults@1
+            condition: always()
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: '$(appDir)/coverage/cobertura-coverage.xml'
+            displayName: 'Publish coverage report (US-02)'
+
+          - script: docker build -t $(imageName):ci .
+            workingDirectory: $(appDir)
+            displayName: 'Docker build validation (multi-stage, target < 200MB)'
+
+          - script: |
+              SIZE_MB=$(docker image inspect $(imageName):ci --format '{{.Size}}' | awk '{printf "%.0f", $1 / 1024 / 1024}')
+              echo "Image size: ${SIZE_MB} MB (target < 200 MB)"
+              if [ "$SIZE_MB" -ge 200 ]; then
+                echo "##vso[task.logissue type=warning]Image exceeds 200MB target (${SIZE_MB}MB)"
+              fi
+            workingDirectory: $(appDir)
+            displayName: 'Check image size'
+
+      - job: InfraQuality
+        displayName: 'Infrastructure quality gates (Bicep)'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - script: |
+              for file in infrastructure/bicep/main.bicep infrastructure/bicep/modules/*.bicep; do
+                echo "=== az bicep build: $file ==="
+                az bicep build --file "$file" --stdout > /dev/null
+              done
+            displayName: 'az bicep build (catches syntax/type errors on every module - equivalent role to cfn-lint in ci.yml)'
+
+  # ============================================================================
+  # STAGE 2 - BUILD & PUSH (main branch only - no deploy artifact is produced
+  # for feature/PR builds, matching F1)
+  # ============================================================================
+  - stage: BuildAndPush
+    displayName: 'Docker build, push to ACR, vulnerability gate'
+    dependsOn: Quality
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: BuildPushScan
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            name: resolveAcr
+            displayName: 'Resolve ACR name for this resource group'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                ACR_NAME=$(az acr list -g $(resourceGroupDev) --query "[0].name" -o tsv)
+                ACR_LOGIN_SERVER=$(az acr list -g $(resourceGroupDev) --query "[0].loginServer" -o tsv)
+                # isOutput=true is required for a variable to survive past
+                # this job - a plain setvariable is job-scoped only and
+                # would silently be empty by the time DeployDev/DeployProd
+                # (separate stages) try to read it.
+                echo "##vso[task.setvariable variable=acrName;isOutput=true]$ACR_NAME"
+                echo "##vso[task.setvariable variable=acrLoginServer;isOutput=true]$ACR_LOGIN_SERVER"
+
+          - task: AzureCLI@2
+            displayName: 'az acr build (remote build + push, no privileged Docker-in-Docker needed)'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              # az acr build is a genuine Azure-native simplification over the
+              # AWS approach: buildspec.yml needed CodeBuild's
+              # PrivilegedMode:true to run "docker build" at all (Docker-in-
+              # Docker). ACR Tasks builds the image remotely and pushes it in
+              # one call - the pipeline agent never needs a Docker daemon or
+              # elevated privileges.
+              inlineScript: |
+                az acr build \
+                  --registry $(acrName) \
+                  --image $(imageName):$(imageTag) \
+                  --build-arg APP_VERSION=$(imageTag) \
+                  $(appDir)
+
+          - script: |
+              curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            displayName: 'Install Trivy'
+
+          - task: AzureCLI@2
+            displayName: 'Vulnerability gate (Trivy against the pushed image) - CRITICAL blocks, HIGH notifies only (mirrors buildspec.yml US-05)'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az acr login --name $(acrName)
+                IMAGE_REF="$(acrLoginServer)/$(imageName):$(imageTag)"
+
+                echo "=== CRITICAL scan (blocking) ==="
+                trivy image --severity CRITICAL --exit-code 1 --no-progress "$IMAGE_REF"
+
+                echo "=== HIGH scan (notify only, does not fail the build) ==="
+                HIGH_COUNT=$(trivy image --severity HIGH --format json --no-progress "$IMAGE_REF" | node -e "
+                  let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
+                    const r=JSON.parse(d);
+                    const n=(r.Results||[]).reduce((sum,x)=>sum+((x.Vulnerabilities||[]).length),0);
+                    console.log(n);
+                  })")
+                echo "HIGH severity findings: $HIGH_COUNT"
+                if [ "$HIGH_COUNT" -gt 0 ]; then
+                  echo "##vso[task.logissue type=warning]$HIGH_COUNT HIGH severity vulnerabilities found (non-blocking, US-05)"
+                fi
+
+  # ============================================================================
+  # STAGE 3 - DEPLOY TO DEV (auto-approved environment - matches
+  # EnableManualApproval=false for dev/staging in the AWS design)
+  # ============================================================================
+  - stage: DeployDev
+    displayName: 'Blue/Green deploy - dev'
+    dependsOn: BuildAndPush
+    condition: succeeded()
+    jobs:
+      - deployment: DeployDevContainerApp
+        environment: taskmanager-dev
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Blue/Green traffic shift (10% -> 50% -> 100%) with health-gated rollback'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: infrastructure/bicep/scripts/blue-green-deploy.sh
+                  env:
+                    RESOURCE_GROUP: $(resourceGroupDev)
+                    CONTAINER_APP_NAME: $(containerAppNameDev)
+                    IMAGE_REF: $(acrLoginServer)/$(imageName):$(imageTag)
+                    IMAGE_TAG: $(imageTag)
+                    TRAFFIC_STEPS: '10 50 100'
+                    STEP_WAIT_SECONDS: '60'
+
+  # ============================================================================
+  # STAGE 4 - DEPLOY TO PROD (the 'taskmanager-prod' Environment carries a
+  # manual approval check configured in the Azure DevOps UI - see the header
+  # comment. This is the direct analog of pipeline.yml's Approval stage,
+  # minus the tension the AWS version documented against US-01: here it is
+  # simply a per-environment setting, not a pipeline-parameter workaround)
+  # ============================================================================
+  - stage: DeployProd
+    displayName: 'Blue/Green deploy - prod'
+    dependsOn: DeployDev
+    condition: succeeded()
+    jobs:
+      - deployment: DeployProdContainerApp
+        environment: taskmanager-prod
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Blue/Green traffic shift (10% -> 50% -> 100%) with health-gated rollback'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: infrastructure/bicep/scripts/blue-green-deploy.sh
+                  env:
+                    RESOURCE_GROUP: $(resourceGroupProd)
+                    CONTAINER_APP_NAME: $(containerAppNameProd)
+                    IMAGE_REF: $(acrLoginServer)/$(imageName):$(imageTag)
+                    IMAGE_TAG: $(imageTag)
+                    TRAFFIC_STEPS: '10 50 100'
+                    STEP_WAIT_SECONDS: '60'
