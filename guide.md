@@ -1,896 +1,1771 @@
-# Guide — passer du test local au vrai compte AWS, stack par stack
+You are now in the right scenario: **region `eu-west-2`, SSO configured, no existing stack, 12 templates present in `infrastructure/cloudformation/`**.
 
-Ce guide sert à **déployer l'infrastructure du projet sur le vrai AWS, un service
-à la fois**, en sachant à chaque étape : quelle commande lancer, ce qu'elle fait,
-combien ça coûte pendant que ça tourne, comment vérifier que ça marche (en CLI
-**et** dans la console), et comment tout supprimer pour arrêter le compteur.
+The requirements spec (CDC) calls for CodePipeline, CodeBuild, ECR, ECS Fargate, CodeDeploy Blue/Green, ALB, Secrets Manager, CloudWatch/SNS, ≥80% test coverage, SAST, Docker image scanning, autoscaling, and rollback.
 
-Jusqu'ici tout a été validé sans AWS (cfn-lint + LocalStack, voir
-[`infrastructure/scripts/README-tests-locaux.md`](infrastructure/scripts/README-tests-locaux.md)).
-Ce qui suit est la suite : le vrai compte.
-
-- Région utilisée dans tout le guide : **`eu-west-2`** (Irlande) — la même que les
-  scripts de test locaux. **Ne change jamais de région en cours de route** : les
-  `Fn::ImportValue` entre stacks ne franchissent pas les frontières de région.
-- `ProjectName=taskmanager`, `Environment=dev` (valeurs par défaut des templates).
-  Tous les noms de ressources en découlent : `taskmanager-dev-cluster`,
-  `taskmanager-dev-service`, etc.
+Recommended approach: **one full deployment + one pipeline test run + immediate teardown**, with `DesiredCount=1` to limit cost.
 
 ---
 
-## Réponse courte aux 3 questions posées
+# 0. Before you start — lock the region
 
-| Question | Réponse |
-|---|---|
-| **Dois-je créer des instances manuellement sur AWS ?** | **Non.** Zéro EC2, zéro instance. Fargate est *serverless* : AWS fournit la capacité de calcul, tu ne gères aucune machine. Tout (VPC, ALB, cluster, service, pipeline) est créé par CloudFormation à partir des 12 templates. Il reste **4 actions manuelles**, aucune n'est une instance — voir [§4](#4-les-4-seules-actions-manuelles-obligatoires). |
-| **Combien ça coûte à l'heure ?** | Infrastructure complète en marche : **≈ 0,12 $/h** (≈ 2,9 $/jour, ≈ 85 $/mois). Le poste dominant n'est **pas** Fargate (0,025 $/h) mais **NAT Gateway (0,05 $/h) + ALB (0,033 $/h)**. Détail par étape ci-dessous et récap en [§6](#6-récapitulatif-des-coûts). |
-| **Comment vérifier que ça marche ?** | Chaque étape de [§5](#5-déploiement-progressif-12-étapes) a un bloc **Vérifier en CLI** et un bloc **Vérifier dans la console** (avec le lien direct). |
-
----
-
-## 1. Ouvrir l'interface AWS (console web)
-
-Ta capture montre le **portail d'accès AWS** (IAM Identity Center / ex-AWS SSO) :
-un compte, trois rôles disponibles — `AdministratorAccess`, `Bedrock`,
-`DataScientist`.
-
-| Ce que tu veux ouvrir | Lien |
-|---|---|
-| **Portail d'accès** (l'écran de ta capture) | `https://<ton-sous-domaine>.awsapps.com/start` — c'est l'URL que tu as déjà dans ton navigateur ; mets-la en favori. Si tu l'as perdue : `https://signin.aws.amazon.com/` puis « Se connecter avec IAM Identity Center ». |
-| **Console AWS** (une fois connectée) | Depuis le portail : clique sur le **nom du rôle `AdministratorAccess`** (le lien bleu de ta capture) → la console s'ouvre dans l'onglet. |
-| Console directe (si session déjà active) | https://eu-west-2.console.aws.amazon.com/console/home?region=eu-west-2 |
-| CloudFormation (l'écran que tu utiliseras le plus) | https://eu-west-2.console.aws.amazon.com/cloudformation/home?region=eu-west-2#/stacks |
-| CloudShell (terminal AWS **dans le navigateur**, déjà authentifié, gratuit) | https://eu-west-2.console.aws.amazon.com/cloudshell/home?region=eu-west-2 |
-
-> **Le rôle à utiliser : `AdministratorAccess`.** `Bedrock` et `DataScientist`
-> n'ont pas les droits de créer des rôles IAM, des VPC ou des pipelines : les
-> stacks échoueraient sur `AccessDenied`.
-
-> **Vérifie toujours la région** en haut à droite de la console : si elle
-> n'affiche pas « Irlande / eu-west-2 », tu regarderas des écrans vides en te
-> demandant pourquoi tes stacks ont disparu. C'est l'erreur n°1.
-
----
-
-## 2. Ouvrir l'AWS CLI
-
-L'AWS CLI n'est pas une application à « ouvrir » : c'est une commande qui
-s'exécute dans un terminal. Trois options, de la plus simple à la plus pratique.
-
-### Option A — CloudShell (zéro installation, recommandé pour un premier essai)
-
-Ouvre https://eu-west-2.console.aws.amazon.com/cloudshell/home?region=eu-west-2 :
-un terminal Linux s'ouvre dans le navigateur, **déjà connecté avec ton rôle**
-(aucune clé à configurer). Gratuit (1 Go de stockage persistant inclus).
-
-Limite : les fichiers du projet ne sont pas dedans. Il faut les y amener :
-
-```bash
-git clone https://github.com/<ton-user>/<ce-repo>.git
-cd <ce-repo>/infrastructure/cloudformation
-```
-
-### Option B — PowerShell sur ta machine (recommandé pour travailler)
-
-1. Installer l'AWS CLI v2 (une fois) :
-   - MSI : https://awscli.amazonaws.com/AWSCLIV2.msi
-   - ou en ligne de commande :
-     ```powershell
-     winget install --id Amazon.AWSCLI --source winget
-     ```
-2. **Ferme et réouvre** PowerShell (le PATH est rechargé au démarrage du shell),
-   puis vérifie :
-   ```powershell
-   aws --version
-   # Attendu : aws-cli/2.x.x Python/3.x Windows/10 exe/AMD64
-   ```
-3. Ouvre ton terminal dans le dossier du projet :
-   ```powershell
-   cd "$HOME\Desktop\Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate\infrastructure\cloudformation"
-   ```
-
-### Option C — le terminal intégré de VS Code
-
-`Ctrl+ù` (ou Terminal → New Terminal). Il est déjà positionné à la racine du
-projet — c'est celui que tu utilises pour `npm test`. Les mêmes commandes qu'en
-Option B y fonctionnent.
-
----
-
-## 3. Se connecter (authentifier la CLI)
-
-Ta capture montre le lien **« Clés d'accès »** à droite de chaque rôle : c'est là
-qu'AWS te donne de quoi authentifier la CLI. Deux méthodes ; **la première est la
-bonne**.
-
-### Méthode 1 — SSO (recommandée : rien de secret sur le disque, renouvellement en 1 commande)
+In PowerShell, from the **project root**:
 
 ```powershell
-aws configure sso --profile taskmanager
-```
+cd "C:\Users\user\Desktop\Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate"
 
-Le assistant pose 5 questions. Réponds :
-
-| Question | Réponse |
-|---|---|
-| `SSO session name` | `taskmanager` |
-| `SSO start URL` | l'URL de ton portail : `https://<ton-sous-domaine>.awsapps.com/start` |
-| `SSO region` | la région **du portail** (souvent `eu-west-2` ou `us-east-1` — elle est indiquée dans la fenêtre « Clés d'accès », onglet SSO) |
-| `SSO registration scopes` | laisse la valeur par défaut (`sso:account:access`) → `Entrée` |
-| *(un navigateur s'ouvre → autorise)* puis rôle / région / format | rôle **`AdministratorAccess`**, région **`eu-west-2`**, format **`json`** |
-
-Ensuite, à chaque nouvelle journée de travail (la session SSO expire au bout de
-quelques heures) :
-
-```powershell
-aws sso login --profile taskmanager
-```
-
-Et pour ne pas répéter `--profile` sur chaque commande, dans le terminal courant :
-
-```powershell
-$env:AWS_PROFILE = "taskmanager"
-$env:AWS_DEFAULT_REGION = "eu-west-2"
-```
-
-> Ces deux variables ne vivent que dans **le terminal ouvert**. Nouveau
-> terminal = à refaire. Pour les rendre permanentes :
-> `[Environment]::SetEnvironmentVariable("AWS_PROFILE","taskmanager","User")`.
-
-### Méthode 2 — clés temporaires copier/coller (dépannage rapide)
-
-Dans le portail (ta capture) → clique **« Clés d'accès »** en face de
-`AdministratorAccess` → onglet **« Windows (PowerShell) »** → copie le bloc et
-colle-le dans ton terminal. Il ressemble à :
-
-```powershell
-$env:AWS_ACCESS_KEY_ID="ASIA..."
-$env:AWS_SECRET_ACCESS_KEY="..."
-$env:AWS_SESSION_TOKEN="..."
+$env:AWS_PROFILE="AdministratorAccess-136609826386"
 $env:AWS_DEFAULT_REGION="eu-west-2"
+
+aws sso login --profile AdministratorAccess-136609826386
 ```
 
-⚠️ Ces clés **expirent en 1 à 12 h** (ce sont des credentials temporaires, d'où
-le `AWS_SESSION_TOKEN`). Quand tu verras
-`ExpiredToken: The security token included in the request is expired`, c'est
-juste ça : recolle un bloc frais. Ne les commite **jamais** dans le repo.
-
-### Vérifier que la connexion marche
+Then:
 
 ```powershell
-aws sts get-caller-identity
+aws sts get-caller-identity --profile AdministratorAccess-136609826386
+aws configure get region --profile AdministratorAccess-136609826386
 ```
 
-**Ce que ça fait** : demande à AWS « qui suis-je ? ». Aucun coût, aucune
-ressource créée — c'est le `ping` de l'authentification.
+**Note:** `aws configure list-profiles` also shows a `default` profile — its credentials are stale/invalid. Always pass `AdministratorAccess-136609826386` explicitly (via `$env:AWS_PROFILE` or `--profile`); don't rely on whatever profile is currently the CLI's implicit default.
 
-Attendu :
+### You should see
 
-```json
-{
-    "UserId": "AROA...:khaoula",
-    "Account": "123456789012",
-    "Arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdministratorAccess_xxx/khaoula"
-}
+```text
+eu-west-2
 ```
 
-Si tu vois `AdministratorAccess` dans l'`Arn` et le bon numéro de compte : tu es
-prête. Note le numéro de compte, il apparaîtra dans tous les ARN.
+and in `get-caller-identity`:
 
-### Avant d'aller plus loin — mets un garde-fou budget (2 min, gratuit)
-
-```powershell
-# Coût réel dépensé ce mois-ci, service par service (lecture seule, gratuit)
-aws ce get-cost-and-usage `
-  --time-period Start=2026-08-01,End=2026-08-31 `
-  --granularity MONTHLY --metrics UnblendedCost `
-  --group-by Type=DIMENSION,Key=SERVICE `
-  --region us-east-1
+```text
+arn:aws:sts::XXXXXXXXXXXX:assumed-role/AWSReservedSSO_AdministratorAccess...
 ```
 
-Et surtout, crée une alerte dans la console (impossible à oublier) :
-https://console.aws.amazon.com/billing/home#/budgets → « Create budget » →
-*Cost budget* → 10 USD/mois → ton email. AWS t'écrit à 80 % et 100 %.
+`AdministratorAccess` is the role to use so you can create the VPC, IAM, and pipeline resources.
 
 ---
 
-## 4. Les 4 seules actions manuelles obligatoires
-
-Aucune n'est « créer une instance ». Ce sont les 4 choses que CloudFormation ne
-**peut pas** faire à ta place (elles impliquent un consentement ou un secret
-externe à AWS).
-
-1. **Autoriser la connexion GitHub (CodeStar Connection).**
-   `iam.yaml` crée la connexion, mais elle naît au statut **`PENDING`** : le
-   *handshake* OAuth avec GitHub doit être fait par un humain dans la console.
-   Tant qu'elle est `PENDING`, le stage *Source* de CodePipeline échoue.
-   → Console : https://eu-west-2.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-2
-   → sélectionne `taskmanager-dev-github` → **« Update pending connection »** →
-   autorise l'app AWS Connector for GitHub → le statut passe à **`AVAILABLE`**.
-   Vérification :
-   ```powershell
-   aws codestar-connections list-connections --query "Connections[].{Name:ConnectionName,Status:ConnectionStatus}"
-   ```
-
-2. **Donner à CodeBuild un accès GitHub (une fois par compte + région).**
-   `codebuild.yaml` déclare `Source.Type: GITHUB` avec `Triggers.Webhook: true`.
-   Sans credential GitHub enregistré, la création de la stack échoue sur
-   *« No Access token found »*. Crée un
-   [Personal Access Token GitHub](https://github.com/settings/tokens) (scopes
-   `repo` + `admin:repo_hook`) puis :
-   ```powershell
-   aws codebuild import-source-credentials `
-     --server-type GITHUB --auth-type PERSONAL_ACCESS_TOKEN `
-     --token "ghp_xxxxxxxxxxxx"
-   ```
-
-3. **Le code applicatif doit être sur GitHub**, dans le dépôt que tu passeras en
-   paramètre (`GitHubRepoUrl` pour CodeBuild, `FullRepositoryId` pour le
-   pipeline). Le pipeline lit `task-manager/buildspec.yml` **depuis le dépôt**,
-   pas depuis ton disque.
-
-4. **Confirmer l'abonnement email SNS** (si tu passes `AlarmEmail`) : AWS envoie
-   un mail « AWS Notification - Subscription Confirmation », il faut cliquer le
-   lien. Sans ce clic, aucune alarme ne t'arrivera.
-
----
-
-## 5. Déploiement progressif (12 étapes)
-
-### Le mode d'emploi de chaque étape
-
-Toutes les étapes suivent le même patron :
+# 1. Confirm there really is no existing stack
 
 ```powershell
-# 0) Filet de sécurité : valider AVANT de créer quoi que ce soit (gratuit)
-aws cloudformation validate-template --template-body file://vpc.yml
-
-# 1) Voir ce qui SERA créé, sans rien créer (gratuit) — le "dry run"
-aws cloudformation deploy --template-file vpc.yml --stack-name taskmanager-dev-vpc `
-  --capabilities CAPABILITY_NAMED_IAM --no-execute-changeset
-
-# 2) Déployer pour de vrai
-aws cloudformation deploy --template-file vpc.yml --stack-name taskmanager-dev-vpc `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Que fait `aws cloudformation deploy` ?** Il envoie le template à AWS, calcule
-un *change set* (la liste des différences avec l'existant), l'exécute, puis
-**attend** la fin en bloquant le terminal. Il crée la stack si elle n'existe pas,
-la met à jour sinon. En cas d'échec, CloudFormation **annule tout** (rollback) :
-tu ne restes pas avec la moitié d'une infra.
-
-- `--capabilities CAPABILITY_NAMED_IAM` : consentement explicite requis dès qu'un
-  template crée des rôles IAM **avec un nom choisi** (`RoleName`). Concerné :
-  `iam.yaml`, `codebuild.yaml`, `observability.yml`. Le passer partout est sans
-  effet ailleurs — c'est plus simple que de s'en souvenir.
-- `--parameter-overrides Cle=Valeur` : surcharge les paramètres du template.
-  Absent = valeur `Default` du template.
-- `--no-execute-changeset` : calcule et affiche, **n'exécute pas**. Zéro coût.
-
-**Si une étape échoue**, la cause est toujours dans les événements de la stack :
-
-```powershell
-aws cloudformation describe-stack-events --stack-name <stack> `
-  --query "StackEvents[?ResourceStatus=='CREATE_FAILED'].[LogicalResourceId,ResourceStatusReason]" `
+aws cloudformation list-stacks `
+  --region eu-west-2 `
+  --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE `
+  --query "StackSummaries[].StackName" `
   --output table
 ```
 
-> **Ordre non négociable** — les stacks se lisent entre elles par
-> `Fn::ImportValue`. Déployer la 7 avant la 1 échoue immédiatement
-> (`No export named taskmanager-dev-vpc-id found`). Suis la numérotation.
+### Expected
+
+No `taskmanager-dev-*` stack.
 
 ---
 
-### Étape 1 — VPC (le réseau) 💰 0,05 $/h
+# 2. Validate the 12 templates BEFORE creating anything
+
+This step matters.
 
 ```powershell
-aws cloudformation deploy --template-file vpc.yml `
-  --stack-name taskmanager-dev-vpc `
-  --parameter-overrides ProjectName=taskmanager Environment=dev NatGatewayStrategy=single `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : 1 VPC (10.0.0.0/16), 2 subnets publics + 2 subnets privés sur
-2 zones de disponibilité, 1 Internet Gateway, **1 NAT Gateway**, les tables de
-routage, 1 VPC Endpoint S3.
-
-**Coût** : le VPC, les subnets et les routes sont **gratuits**. Ce qui coûte :
-NAT Gateway **0,045 $/h** + son adresse IPv4 publique **0,005 $/h** + 0,045 $/GB
-de trafic sortant. Soit **≈ 0,05 $/h = 1,20 $/jour**, même sans aucun trafic.
-👉 Garde `NatGatewayStrategy=single` (le défaut) ; `ha` double la facture NAT.
-
-**Vérifier en CLI**
-
-```powershell
-# Les 13 exports que les autres stacks vont consommer
-aws cloudformation describe-stacks --stack-name taskmanager-dev-vpc `
-  --query "Stacks[0].Outputs[].{Cle:OutputKey,Valeur:OutputValue}" --output table
-
-# Le NAT doit être "available" — sinon les tâches ECS n'auront pas d'internet
-aws ec2 describe-nat-gateways --filter "Name=tag:Project,Values=taskmanager" `
-  --query "NatGateways[].{Id:NatGatewayId,Etat:State}" --output table
-```
-
-**Vérifier dans la console** : https://eu-west-2.console.aws.amazon.com/vpcconsole/home?region=eu-west-2#vpcs:
-→ le VPC `taskmanager-dev-vpc` doit apparaître ; onglet **Resource map** pour voir
-les 4 subnets et le routage d'un coup d'œil.
-
----
-
-### Étape 2 — IAM + connexion GitHub 💰 gratuit
-
-```powershell
-aws cloudformation deploy --template-file infrastructure/cloudformation/iam.yaml `
-  --stack-name taskmanager-dev-iam `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : 4 rôles IAM (CodePipeline, CodeDeploy, ECS *execution*, ECS
-*task*) + la **CodeStar Connection** vers GitHub.
-
-**Coût** : **0 $**. IAM et les connexions sont gratuits — cette étape ne fait
-jamais tourner le compteur.
-
-**Vérifier en CLI**
-
-```powershell
-aws iam list-roles --query "Roles[?starts_with(RoleName,'taskmanager-dev')].RoleName" --output table
-aws codestar-connections list-connections --query "Connections[].{Nom:ConnectionName,Statut:ConnectionStatus}" --output table
-```
-
-👉 Le statut sera **`PENDING`** : c'est normal, fais maintenant l'action manuelle
-n°1 de [§4](#4-les-4-seules-actions-manuelles-obligatoires) pour le passer à
-`AVAILABLE`.
-
-**Console** : https://eu-west-2.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-2
-
----
-
-### Étape 3 — Secrets Manager 💰 0,0011 $/h (0,80 $/mois)
-
-```powershell
-aws cloudformation deploy --template-file secrets-manager.yaml `
-  --stack-name taskmanager-dev-secrets `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : 2 secrets (credentials DB avec mot de passe généré par AWS,
-clé d'API). Leurs ARN finissent par un suffixe aléatoire — d'où l'export, qu'on
-ne peut pas deviner.
-
-**Coût** : **0,40 $/secret/mois** × 2 = **0,80 $/mois** (facturé au prorata) +
-0,05 $ par 10 000 appels API. Négligeable, mais **pas supprimable instantanément** :
-un secret supprimé reste en « recovery window » 7 à 30 jours et continue d'être
-facturé (voir [§7](#7-tout-supprimer-arrêter-le-compteur)).
-
-**Ne saute pas cette étape** : dès qu'une task definition déclare des secrets,
-ECS refuse de démarrer la tâche s'il ne peut pas les lire.
-
-**Vérifier en CLI**
-
-```powershell
-aws secretsmanager list-secrets --query "SecretList[?starts_with(Name,'taskmanager')].Name" --output table
-
-# Lire la valeur générée (⚠️ affiche le mot de passe en clair dans le terminal)
-aws secretsmanager get-secret-value --secret-id taskmanager/dev/db --query SecretString --output text
-```
-
-**Console** : https://eu-west-2.console.aws.amazon.com/secretsmanager/listsecrets?region=eu-west-2
-
----
-
-### Étape 4 — ECR (registre Docker) 💰 ~0 $ (0,005 $/mois)
-
-```powershell
-aws cloudformation deploy --template-file ecr.yaml `
-  --stack-name taskmanager-dev-ecr `
-  --parameter-overrides ProjectName=taskmanager Environment=dev MaxImageCount=10 `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : le dépôt Docker privé `taskmanager-dev`, avec scan de
-vulnérabilités au push et une lifecycle policy (10 images max).
-
-**Coût** : **0,10 $/GB-mois** de stockage. L'image du projet pèse 48 Mo → moins
-d'un centime par mois. Le *Basic Scanning* est **gratuit**.
-
-**Vérifier en CLI**
-
-```powershell
-aws ecr describe-repositories --repository-names taskmanager-dev `
-  --query "repositories[0].{Uri:repositoryUri,ScanAuPush:imageScanningConfiguration.scanOnPush,Tags:imageTagMutability}"
-
-# Après le premier build : lister les images poussées
-aws ecr list-images --repository-name taskmanager-dev --output table
-```
-
-**Console** : https://eu-west-2.console.aws.amazon.com/ecr/repositories?region=eu-west-2
-
-> ⚠️ **Problème connu, à trancher AVANT l'étape 5** (déjà documenté dans
-> [`so-far.md`](so-far.md)) : `ecr.yaml` déclare `ImageTagMutability: IMMUTABLE`
-> alors que `buildspec.yml` pousse `:latest` à chaque build. **Le 1er build
-> passera, tous les suivants échoueront** sur `docker push ...:latest` (ECR
-> refuse de réassigner un tag existant). Trois issues : ne pousser que le tag
-> SHA, passer le dépôt en `MUTABLE`, ou ne pousser `latest` qu'au premier build.
-> Ça n'empêche pas de tester les étapes 4 et 5 — mais ça bloquera le 2ᵉ passage
-> du pipeline.
-
----
-
-### Étape 5 — CodeBuild 💰 0 $ au repos, 0,005 $/minute de build
-
-⚠️ L'action manuelle n°2 de [§4](#4-les-4-seules-actions-manuelles-obligatoires)
-(token GitHub) doit être faite avant, sinon la stack échoue.
-
-```powershell
-aws cloudformation deploy --template-file codebuild.yaml `
-  --stack-name taskmanager-dev-codebuild `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-      GitHubRepoUrl=https://github.com/<ton-user>/<ton-repo> `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : le projet CodeBuild `taskmanager-dev-build` (rôle dédié,
-webhook sur `main`/`develop`, cache Docker, log group avec rétention 30 jours) —
-il exécute `task-manager/buildspec.yml` : npm ci → SAST Semgrep → tests +
-couverture 80 % → build Docker → push ECR → lecture du scan ECR.
-
-**Coût** : **rien tant qu'aucun build ne tourne** (pas de serveur allumé). Un
-build coûte 0,005 $/minute sur `BUILD_GENERAL1_SMALL`, et les **100 premières
-minutes du mois sont gratuites** → un build de 5 min ≈ **0,025 $**, souvent 0 $.
-Timeout à 15 min = plafond de 0,075 $ par build.
-
-**Vérifier en CLI** — et c'est ici que tu testes vraiment, sans pipeline :
-
-```powershell
-# Lancer un build à la main
-aws codebuild start-build --project-name taskmanager-dev-build --query "build.id" --output text
-
-# Suivre son état (relance la commande de temps en temps)
-aws codebuild batch-get-builds --ids "<build-id>" `
-  --query "builds[0].{Statut:buildStatus,Phase:currentPhase,Duree:phases[-1].durationInSeconds}"
-
-# Lire les logs
-aws logs tail /aws/codebuild/taskmanager-dev --follow
-```
-
-Attendu : `buildStatus = SUCCEEDED`, puis une image visible dans
-`aws ecr list-images --repository-name taskmanager-dev`.
-
-**Console** : https://eu-west-2.console.aws.amazon.com/codesuite/codebuild/projects?region=eu-west-2
-→ le projet → un build → onglets **Phase details** (quelle phase a échoué),
-**Build logs**, **Reports** (tests JUnit + couverture Cobertura affichée
-nativement).
-
-> 👉 **Bonne étape pour s'arrêter** : à ce stade tu as un CI complet (build,
-> tests, image dans ECR) pour ≈ 0,05 $/h — l'essentiel étant le NAT de
-> l'étape 1. Les étapes 6 à 12 ajoutent le déploiement, et c'est là que le coût
-> horaire double.
-
----
-
-### Étape 6 — Cluster ECS 💰 0 $ (le cluster vide est gratuit)
-
-```powershell
-aws cloudformation deploy --template-file ecs-cluster.yaml `
-  --stack-name taskmanager-dev-ecs-cluster `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : le cluster Fargate `taskmanager-dev-cluster` avec
-**Container Insights** activé. Un cluster n'est qu'un regroupement logique :
-**aucune machine n'est allumée** (c'est la réponse concrète à « dois-je créer des
-instances ? » — non, il n'y a pas de nœud à provisionner en Fargate).
-
-**Coût** : cluster = **0 $**. Attention toutefois : **Container Insights publie
-des métriques custom facturées** (~0,30 $/métrique/mois, et il en publie
-plusieurs dizaines par service) → compte quelques $/mois dès que des tâches
-tournent. Pour un test à budget serré, tu peux le désactiver dans
-`ecs-cluster.yaml` (`ClusterSettings` → `containerInsights: disabled`).
-
-**Vérifier en CLI**
-
-```powershell
-aws ecs describe-clusters --clusters taskmanager-dev-cluster `
-  --query "clusters[0].{Nom:clusterName,Statut:status,Taches:runningTasksCount}"
-```
-
-**Console** : https://eu-west-2.console.aws.amazon.com/ecs/v2/clusters?region=eu-west-2
-
----
-
-### Étape 7 — ALB (load balancer) 💰 0,033 $/h
-
-Cette stack prend le VPC et les subnets **en paramètres** : on les lit dans les
-exports de l'étape 1 plutôt que de les recopier à la main.
-
-```powershell
-$vpcId    = aws cloudformation list-exports --query "Exports[?Name=='taskmanager-dev-vpc-id'].Value" --output text
-$pubSub   = aws cloudformation list-exports --query "Exports[?Name=='taskmanager-dev-public-subnet-ids'].Value" --output text
-$vpcId; $pubSub   # contrôle visuel avant de déployer
-
-aws cloudformation deploy --template-file alb.yaml `
-  --stack-name taskmanager-dev-alb `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-      VpcId=$vpcId "PublicSubnetIds=$pubSub" ContainerPort=3000 HealthCheckPath=/health `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : 1 Application Load Balancer public, **2 target groups**
-(Blue et Green — indispensables au déploiement sans interruption), 1 listener
-prod (port 80) et 1 listener de test (port 8080), 1 security group.
-
-**Coût** : ALB **0,0225 $/h** + 2 adresses IPv4 publiques (une par AZ)
-**0,01 $/h** + LCU ~0,008 $/h en usage faible ≈ **0,033 $/h = 0,79 $/jour**.
-Facturé même sans une seule requête : **c'est le 2ᵉ poste de dépense après le NAT.**
-
-**Vérifier en CLI**
-
-```powershell
-aws elbv2 describe-load-balancers --names taskmanager-dev-alb `
-  --query "LoadBalancers[0].{Dns:DNSName,Etat:State.Code,Schema:Scheme}"
-```
-
-À ce stade, `curl http://<DNS>/` répond **503** : c'est le comportement
-**attendu** — l'ALB existe mais aucune tâche n'est encore derrière.
-
-**Console** : https://eu-west-2.console.aws.amazon.com/ec2/home?region=eu-west-2#LoadBalancers:
-
----
-
-### Étape 8 — Task definition 💰 0 $
-
-```powershell
-aws cloudformation deploy --template-file ecs-task-definition.yaml `
-  --stack-name taskmanager-dev-taskdef `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-      ContainerCpu=256 ContainerMemory=512 ContainerPort=3000 `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : la task definition `taskmanager-dev-task` (le « plan » du
-conteneur : image, CPU/RAM, port, healthcheck, injection des secrets) + le log
-group applicatif `/ecs/taskmanager-dev` (rétention 30 jours).
-
-**Coût** : **0 $** — une task definition est un document JSON stocké par AWS.
-Elle ne coûte que lorsqu'une tâche est **lancée** à partir d'elle (étape 9).
-
-> Celle-ci est une task definition de **bootstrap** : elle pointe sur
-> `<repo>:latest`. En régime normal, c'est CodeBuild qui génère le
-> `taskdef.json` de chaque build et CodeDeploy qui enregistre une nouvelle
-> révision. Il faut donc qu'une image existe déjà dans ECR (étape 5) — sinon la
-> tâche de l'étape 9 échouera au *pull*.
-
-**Vérifier en CLI**
-
-```powershell
-aws ecs describe-task-definition --task-definition taskmanager-dev-task `
-  --query "taskDefinition.{Revision:revision,Cpu:cpu,Memoire:memory,Image:containerDefinitions[0].image}"
-```
-
----
-
-### Étape 9 — Service ECS 💰 0,025 $/h (2 tâches) — l'app devient joignable
-
-```powershell
-$vpcId  = aws cloudformation list-exports --query "Exports[?Name=='taskmanager-dev-vpc-id'].Value" --output text
-$privSub = aws cloudformation list-exports --query "Exports[?Name=='taskmanager-dev-private-subnet-ids'].Value" --output text
-
-aws cloudformation deploy --template-file ecs-service.yaml `
-  --stack-name taskmanager-dev-ecs-service `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-      VpcId=$vpcId "PrivateSubnetIds=$privSub" ContainerPort=3000 DesiredCount=2 `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : le service Fargate `taskmanager-dev-service` — il maintient
-2 tâches en vie dans les subnets privés, les enregistre dans le target group
-Blue, et délègue les déploiements à CodeDeploy
-(`DeploymentController: CODE_DEPLOY`).
-
-**Coût** : Fargate est facturé **à la seconde** sur les ressources demandées, à
-eu-west-2 : 0,04048 $/vCPU-h + 0,004445 $/GB-h. Une tâche 0,25 vCPU / 0,5 Go =
-**0,0123 $/h** → **2 tâches = 0,025 $/h = 0,59 $/jour**. Pendant un déploiement
-Blue/Green, les 2 versions coexistent → **le double**, temporairement.
-👉 `DesiredCount=1` divise ce poste par deux si tu veux juste voir l'app répondre.
-
-**Vérifier en CLI — le test qui compte**
-
-```powershell
-# 1) Le service a-t-il autant de tâches qui tournent que demandé ?
-aws ecs describe-services --cluster taskmanager-dev-cluster --services taskmanager-dev-service `
-  --query "services[0].{Statut:status,Voulu:desiredCount,EnCours:runningCount,Type:launchType}"
-# Attendu : status ACTIVE, runningCount == desiredCount == 2
-
-# 2) Le load balancer considère-t-il les tâches comme SAINES ? (le vrai verdict)
-$tgBlue = aws cloudformation list-exports --query "Exports[?Name=='taskmanager-dev-tg-blue-arn'].Value" --output text
-aws elbv2 describe-target-health --target-group-arn $tgBlue `
-  --query "TargetHealthDescriptions[].{Cible:Target.Id,Etat:TargetHealth.State,Raison:TargetHealth.Reason}" --output table
-# Attendu : "healthy" pour chaque cible
-
-# 3) L'application répond-elle vraiment ?
-$dns = aws cloudformation list-exports --query "Exports[?Name=='taskmanager-dev-alb-dns'].Value" --output text
-"http://$dns"                                            # ← ouvre cette URL dans ton navigateur
-Invoke-RestMethod "http://$dns/health"                   # attendu : status ok
-Invoke-RestMethod "http://$dns/api/tasks"                # attendu : la liste JSON des tâches
-
-# 4) Si ça ne répond pas : pourquoi la tâche s'est-elle arrêtée ?
-aws ecs describe-services --cluster taskmanager-dev-cluster --services taskmanager-dev-service `
-  --query "services[0].events[0:5].message"
-aws logs tail /ecs/taskmanager-dev --follow                # les logs du conteneur
-```
-
-**Vérifier dans la console**
-
-1. **ECS** → https://eu-west-2.console.aws.amazon.com/ecs/v2/clusters/taskmanager-dev-cluster/services?region=eu-west-2
-   → le service doit afficher **2/2 tasks running** ; onglet **Health and
-   metrics** pour l'état du target group, onglet **Logs** pour les logs
-   applicatifs, onglet **Events** en cas de boucle de redémarrage.
-2. **Target group** → https://eu-west-2.console.aws.amazon.com/ec2/home?region=eu-west-2#TargetGroups:
-   → `taskmanager-dev-tg-blue` → onglet **Targets** → les 2 cibles en
-   **healthy** (vert).
-3. **L'app elle-même** : copie le **DNS name** de l'ALB
-   (https://eu-west-2.console.aws.amazon.com/ec2/home?region=eu-west-2#LoadBalancers:)
-   et ouvre `http://<dns>` → l'interface HTML du task-manager s'affiche.
-
----
-
-### Étape 10 — CodePipeline + CodeDeploy 💰 ~1 $/mois
-
-⚠️ La connexion GitHub doit être `AVAILABLE` (action manuelle n°1).
-
-```powershell
-aws cloudformation deploy --template-file pipeline.yml `
-  --stack-name taskmanager-dev-pipeline `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-      FullRepositoryId=<ton-user>/<ton-repo> BranchName=main EnableManualApproval=true `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : le pipeline `taskmanager-dev-pipeline` (Source → Build →
-Approval → Deploy), l'application et le *deployment group* CodeDeploy en
-Blue/Green (bascule progressive du trafic + rollback automatique), le bucket S3
-d'artefacts, le topic SNS de notifications.
-
-**Coût** : **1 $/mois par pipeline actif** (un mois sans aucune exécution n'est
-pas facturé) + le stockage S3 des artefacts (quelques centimes) + SNS (1 000
-emails/mois gratuits).
-
-**Vérifier en CLI — bout en bout**
-
-```powershell
-# État de chaque stage
-aws codepipeline get-pipeline-state --name taskmanager-dev-pipeline `
-  --query "stageStates[].{Etape:stageName,Statut:latestExecution.status}" --output table
-
-# Déclencher une exécution sans faire de commit
-aws codepipeline start-pipeline-execution --name taskmanager-dev-pipeline
-
-# Approuver manuellement (le stage Approval attend, et expire après 7 jours)
-aws codepipeline put-approval-result --pipeline-name taskmanager-dev-pipeline `
-  --stage-name Approval --action-name ManualApproval `
-  --result summary="OK",status=Approved --token <token-lu-dans-get-pipeline-state>
-
-# Suivre le déploiement Blue/Green
-aws deploy list-deployments --application-name taskmanager-dev-app `
-  --deployment-group-name taskmanager-dev-dg --query "deployments[0]" --output text
-aws deploy get-deployment --deployment-id <id> --query "deploymentInfo.status"
-```
-
-**Console** (c'est l'écran le plus parlant du projet) :
-https://eu-west-2.console.aws.amazon.com/codesuite/codepipeline/pipelines/taskmanager-dev-pipeline/view?region=eu-west-2
-→ le diagramme vertical des 4 stages ; le bouton **Review** sur le stage
-Approval ; et pour la bascule de trafic :
-https://eu-west-2.console.aws.amazon.com/codesuite/codedeploy/deployments?region=eu-west-2
-→ un déploiement → **Traffic shifting progress** (10 % → 100 %).
-
-**Le test qui valide tout le projet** : fais un commit trivial sur `main` du
-dépôt applicatif, pousse, et regarde le pipeline se déclencher tout seul, puis
-`curl http://<dns>/health` pendant la bascule — il doit répondre **200 sans
-interruption**.
-
----
-
-### Étape 11 — Auto scaling 💰 ~0,20 $/mois (2 alarmes)
-
-```powershell
-aws cloudformation deploy --template-file ecs-autoscaling.yaml `
-  --stack-name taskmanager-dev-autoscaling `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-      MinCapacity=2 MaxCapacity=6 TargetCpuUtilization=70 `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : un *scalable target* sur le service ECS (2 → 6 tâches) avec
-une politique **Target Tracking** à 70 % de CPU, + 2 alarmes d'information (CPU
-soutenu > 85 %, capacité max atteinte).
-
-**Coût** : les 2 alarmes standard = **0,20 $/mois**. Mais le vrai coût est
-indirect : **jusqu'à 6 tâches** = jusqu'à **0,074 $/h** de Fargate au lieu de
-0,025 $/h. En test, `MaxCapacity=3` limite la casse.
-
-> ⚠️ Après cette étape, le `DesiredCount` de l'étape 9 n'est plus qu'une valeur
-> initiale : **Application Auto Scaling en devient propriétaire**. Pour changer
-> durablement le nombre de tâches, ajuste `MinCapacity`/`MaxCapacity`, pas
-> `DesiredCount`.
-
-**Vérifier en CLI**
-
-```powershell
-aws application-autoscaling describe-scalable-targets --service-namespace ecs `
-  --resource-ids service/taskmanager-dev-cluster/taskmanager-dev-service `
-  --query "ScalableTargets[0].{Min:MinCapacity,Max:MaxCapacity}"
-
-aws application-autoscaling describe-scaling-activities --service-namespace ecs `
-  --resource-id service/taskmanager-dev-cluster/taskmanager-dev-service `
-  --query "ScalingActivities[0:5].[StatusCode,Description]" --output table
-```
-
-**Console** : l'onglet **Auto scaling** du service ECS (lien de l'étape 9).
-
----
-
-### Étape 12 — Observabilité 💰 ~1 $/mois (+ logs)
-
-```powershell
-aws cloudformation deploy --template-file observability.yml `
-  --stack-name taskmanager-dev-observability `
-  --parameter-overrides ProjectName=taskmanager Environment=dev `
-      AlarmEmail=khaoula.mechria@supcom.tn `
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**Ce que ça crée** : une Lambda Python qui publie 3 métriques custom
-(`PipelineDuration`, `PipelineSuccess`, `PipelineFailure`) à chaque fin
-d'exécution, la règle EventBridge qui la déclenche, 2 alarmes (durée, échec) et
-un **dashboard CloudWatch de 8 widgets**.
-
-**Coût** : dashboard **3 $/mois** (les **3 premiers dashboards sont gratuits** →
-0 $ ici), 2 alarmes 0,20 $/mois, 3 métriques custom 0,90 $/mois, Lambda dans le
-free tier (0 $), logs 0,50 $/GB ingéré. ≈ **1 $/mois**.
-
-👉 N'oublie pas de **cliquer le lien de confirmation** dans le mail SNS.
-
-**Vérifier en CLI**
-
-```powershell
-aws cloudwatch describe-alarms --alarm-name-prefix taskmanager-dev `
-  --query "MetricAlarms[].{Nom:AlarmName,Etat:StateValue}" --output table
-aws sns list-subscriptions --query "Subscriptions[?contains(TopicArn,'taskmanager')].{Email:Endpoint,Statut:SubscriptionArn}" --output table
-# Statut "PendingConfirmation" = tu n'as pas encore cliqué le lien du mail
-```
-
-**Console** : https://eu-west-2.console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:
-→ `taskmanager-dev-dashboard`.
-
----
-
-## 6. Récapitulatif des coûts
-
-Tarifs **eu-west-2**, ordre de grandeur (à confirmer avec
-[le calculateur AWS](https://calculator.aws/#/) — les prix évoluent).
-
-| # | Stack | Coût à l'heure | Coût au mois | Facturé même à l'arrêt ? |
-|---|---|---|---|---|
-| 1 | vpc | **0,050 $** | ~36 $ | ✅ oui (NAT + IP) |
-| 2 | iam | 0 $ | 0 $ | — |
-| 3 | secrets-manager | 0,0011 $ | 0,80 $ | ✅ oui |
-| 4 | ecr | ~0 $ | 0,005 $ | ✅ (négligeable) |
-| 5 | codebuild | 0 $ au repos | 0 $ (100 min offertes) | ❌ non |
-| 6 | ecs-cluster | 0 $ | 0 $ (+ Container Insights) | ❌ non |
-| 7 | alb | **0,033 $** | ~24 $ | ✅ oui |
-| 8 | ecs-task-definition | 0 $ | 0 $ | ❌ non |
-| 9 | ecs-service (2 tâches) | **0,025 $** | ~18 $ | ✅ oui |
-| 10 | pipeline | ~0,0014 $ | ~1 $ | ✅ (si actif) |
-| 11 | ecs-autoscaling | 0,0003 $ | 0,20 $ | ✅ oui |
-| 12 | observability | 0,0014 $ | ~1 $ | ✅ oui |
-| | **TOTAL en marche** | **≈ 0,12 $/h** | **≈ 85 $/mois** | |
-
-**Les 3 arrêts recommandés**, selon ton budget :
-
-| Tu t'arrêtes après… | Ce que tu as validé | Coût |
-|---|---|---|
-| **Étape 5** | Tout le CI : build, SAST, tests, couverture, image dans ECR, scan | **≈ 0,05 $/h** (uniquement le NAT) |
-| **Étape 9** | + l'application réellement joignable sur internet via l'ALB | **≈ 0,11 $/h** |
-| **Étape 12** | Le projet complet : CD Blue/Green, scaling, observabilité | **≈ 0,12 $/h** |
-
-**Trois leviers pour payer moins pendant les tests**
-1. `DesiredCount=1` et `MinCapacity=1` → Fargate divisé par 2.
-2. Supprimer `alb` + `ecs-service` en fin de journée et les redéployer le
-   lendemain (2 commandes, ~5 min) → économise 0,058 $/h, soit ~1,4 $/nuit.
-3. **Supprimer la stack `vpc` dès que tu ne testes plus** : le NAT est le premier
-   poste de dépense et il tourne 24/7, même quand tu ne fais rien.
-
----
-
-## 7. Tout supprimer (arrêter le compteur)
-
-**Ordre inverse strict** du déploiement : une stack dont les exports sont encore
-importés par une autre **refusera** de se supprimer.
-
-```powershell
-$stacks = @(
-  "taskmanager-dev-observability",
-  "taskmanager-dev-autoscaling",
-  "taskmanager-dev-pipeline",
-  "taskmanager-dev-ecs-service",
-  "taskmanager-dev-taskdef",
-  "taskmanager-dev-alb",
-  "taskmanager-dev-ecs-cluster",
-  "taskmanager-dev-codebuild",
-  "taskmanager-dev-ecr",
-  "taskmanager-dev-secrets",
-  "taskmanager-dev-iam",
-  "taskmanager-dev-vpc"
+$files = @(
+    "vpc.yml",
+    "iam.yaml",
+    "secrets-manager.yaml",
+    "ecr.yaml",
+    "codebuild.yaml",
+    "ecs-cluster.yaml",
+    "alb.yaml",
+    "ecs-task-definition.yaml",
+    "ecs-service.yaml",
+    "pipeline.yml",
+    "ecs-autoscaling.yaml",
+    "observability.yml"
 )
-foreach ($s in $stacks) {
-  Write-Host "Suppression de $s ..."
-  aws cloudformation delete-stack --stack-name $s
-  aws cloudformation wait stack-delete-complete --stack-name $s
+
+foreach ($f in $files) {
+    Write-Host "`n===== $f =====" -ForegroundColor Cyan
+    aws cloudformation validate-template `
+        --template-body "file://infrastructure/cloudformation/$f" `
+        --region eu-west-2 `
+        --query "Description" `
+        --output text
 }
 ```
 
-**Contrôle final — plus rien ne doit tourner :**
+### What you want
 
-```powershell
-aws cloudformation describe-stacks --query "Stacks[?starts_with(StackName,'taskmanager')].{Nom:StackName,Statut:StackStatus}" --output table
-aws ec2 describe-nat-gateways --filter "Name=state,Values=available" --query "NatGateways[].NatGatewayId"
-aws elbv2 describe-load-balancers --query "LoadBalancers[].LoadBalancerName"
-aws ecs list-tasks --cluster taskmanager-dev-cluster 2>$null
+No error of the form:
+
+```text
+Template format error
 ```
 
-**Deux pièges à la suppression**
+or
 
-- **Bucket S3 d'artefacts non vide** → `DELETE_FAILED` sur la stack `pipeline`.
-  Vide-le puis relance :
-  ```powershell
-  $b = aws cloudformation describe-stacks --stack-name taskmanager-dev-pipeline `
-        --query "Stacks[0].Outputs[?OutputKey=='PipelineArtifactsBucketName'].OutputValue" --output text
-  aws s3 rm "s3://$b" --recursive
-  ```
-- **ECR non vide** → `DELETE_FAILED` sur la stack `ecr` si des images ont été
-  poussées :
-  ```powershell
-  aws ecr delete-repository --repository-name taskmanager-dev --force
-  ```
-- **Secrets Manager** : les secrets partent en « recovery window » (7 à 30 j) et
-  restent facturés. Suppression immédiate si tu es sûre :
-  ```powershell
-  aws secretsmanager delete-secret --secret-id taskmanager/dev/db --force-delete-without-recovery
-  ```
+```text
+ValidationError
+```
+
+**If even one template fails: STOP here.** Do not deploy the remaining stacks.
 
 ---
 
-## 8. Erreurs fréquentes et ce qu'elles veulent dire
+### Deployment order — an important CloudFormation dependency
 
-| Message | Cause réelle | Correctif |
-|---|---|---|
-| `ExpiredToken: ... security token ... is expired` | Session SSO / clés temporaires expirées | `aws sso login --profile taskmanager`, ou recoller les clés du portail |
-| `No export named taskmanager-dev-vpc-id found` | Étape sautée, ou **mauvaise région** | Vérifier l'ordre et `$env:AWS_DEFAULT_REGION` |
-| `Requires capabilities : [CAPABILITY_NAMED_IAM]` | Le template crée des rôles nommés | Ajouter `--capabilities CAPABILITY_NAMED_IAM` |
-| `No Access token found for server type GITHUB` | Action manuelle n°2 non faite | `aws codebuild import-source-credentials ...` |
-| Stage *Source* du pipeline en échec | Connexion GitHub restée `PENDING` | Action manuelle n°1 (console → Update pending connection) |
-| `ROLLBACK_COMPLETE` (impossible de mettre à jour) | La toute 1ʳᵉ création a échoué : la stack est un cadavre | `aws cloudformation delete-stack --stack-name <s>` puis redéployer |
-| Log group `already exists` (codebuild) | Des builds ont tourné avant l'ajout du log group au template | `aws logs delete-log-group --log-group-name /aws/codebuild/taskmanager-dev` puis redéployer |
-| ALB renvoie **503** | Aucune cible saine derrière | Étape 9 non faite, ou `describe-target-health` → lire `Reason` |
-| Tâche ECS en boucle `STOPPED` | `pull` de l'image impossible, ou secret illisible | `describe-services --query "services[0].events"` + `aws logs tail /ecs/taskmanager-dev` |
-| `docker push ...:latest` échoue au 2ᵉ build | `ImageTagMutability: IMMUTABLE` vs push de `latest` | Voir l'avertissement de l'étape 4 — arbitrage à trancher |
+The `iam.yaml` template imports the `taskmanager-dev-codebuild-arn` export. That means the **CodeBuild stack must be created before the IAM stack**.
+
+The requirements spec (CDC) does not dictate the order in which CloudFormation stacks are created; it only specifies the components and their responsibilities. An earlier version of this guide deployed IAM before CodeBuild, which caused the error `No export named taskmanager-dev-codebuild-arn found`.
+
+**Order used in this corrected guide:** VPC → Secrets Manager → ECR → (optional: manual Docker build/push sanity check) → CodeBuild → IAM/GitHub Connection → ECS Cluster → ALB → Task Definition → ECS Service → Pipeline/CodeDeploy → Autoscaling → Observability.
 
 ---
 
-## 9. Aide-mémoire — les 8 commandes à retenir
+# 3. Deploy the VPC
 
 ```powershell
-aws sso login --profile taskmanager                      # se connecter
-aws sts get-caller-identity                              # qui suis-je ? (gratuit)
-aws cloudformation deploy --template-file X --stack-name Y --capabilities CAPABILITY_NAMED_IAM   # déployer
-aws cloudformation describe-stack-events --stack-name Y   # pourquoi ça a échoué
-aws cloudformation list-exports                           # tous les liens entre stacks
-aws ecs describe-services --cluster taskmanager-dev-cluster --services taskmanager-dev-service   # l'app tourne-t-elle
-aws logs tail /ecs/taskmanager-dev --follow                # les logs en direct
-aws cloudformation delete-stack --stack-name Y             # arrêter le compteur
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/vpc.yml `
+  --stack-name taskmanager-dev-vpc `
+  --parameter-overrides ProjectName=taskmanager Environment=dev NatGatewayStrategy=single `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
 ```
+
+Wait for:
+
+```text
+Successfully created/updated stack - taskmanager-dev-vpc
+```
+
+### Verify
+
+```powershell
+aws cloudformation describe-stacks `
+  --stack-name taskmanager-dev-vpc `
+  --region eu-west-2 `
+  --query "Stacks[0].{Status:StackStatus,Outputs:Outputs}" `
+  --output table
+```
+
+Then:
+
+```powershell
+aws ec2 describe-vpcs `
+  --region eu-west-2 `
+  --filters "Name=tag:Name,Values=taskmanager-dev-vpc" `
+  --query "Vpcs[].{VPC:VpcId,CIDR:CidrBlock,State:State}" `
+  --output table
+```
+
+And:
+
+```powershell
+aws ec2 describe-nat-gateways `
+  --region eu-west-2 `
+  --filter "Name=state,Values=available" `
+  --query "NatGateways[].{ID:NatGatewayId,State:State}" `
+  --output table
+```
+
+### CDC confirmation
+
+You now have the required network layer: VPC, subnets, and security groups — explicitly required by the CDC.
+
+---
+
+# 4. Secrets Manager
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/secrets-manager.yaml `
+  --stack-name taskmanager-dev-secrets `
+  --parameter-overrides ProjectName=taskmanager Environment=dev `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws secretsmanager list-secrets `
+  --region eu-west-2 `
+  --query "SecretList[?starts_with(Name,'taskmanager')].Name" `
+  --output table
+```
+
+### CDC confirmation
+
+Secrets must live in Secrets Manager, never as plaintext CodeBuild environment variables. This is an explicit CDC requirement.
+
+---
+
+# 5. ECR
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/ecr.yaml `
+  --stack-name taskmanager-dev-ecr `
+  --parameter-overrides ProjectName=taskmanager Environment=dev MaxImageCount=10 `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws ecr describe-repositories `
+  --repository-names taskmanager-dev `
+  --region eu-west-2 `
+  --query "repositories[0].{URI:repositoryUri,ScanOnPush:imageScanningConfiguration.scanOnPush,TagMutability:imageTagMutability}" `
+  --output table
+```
+
+Also check the account's **registry-wide** scanning mode — the per-repo `ScanOnPush` above doesn't tell you this, and it changes how the scan gate behaves (see step 14's troubleshooting):
+
+```powershell
+aws inspector2 batch-get-account-status --region eu-west-2
+```
+
+If `resourceState.ecr.status` is `ENABLED`, the registry uses **Enhanced Scanning (Amazon Inspector v2)**, not Basic Scanning — that's the case for this account.
+
+### Important
+
+The CDC requires:
+
+* a Docker image;
+* tagged with the commit SHA;
+* pushed to ECR;
+* scanned for vulnerabilities.
+
+The repository is **`MUTABLE`** (switched back from `IMMUTABLE` on 2026-08-14 — see step 14's troubleshooting for why: `IMMUTABLE` made every automated build fail at `docker push`, a known unfixed BuildKit/ECR interaction, not something specific to this project). `buildspec.yml` still only pushes the commit-SHA tag on every automated build, never `latest` — that's just not useful, not a mutability workaround. One consequence either way: **something still has to push a `:latest` image once, manually, before the Task Definition/ECS Service stacks (steps 11-12)** — `ecs-task-definition.yaml`'s bootstrap `ContainerImage` parameter defaults to `<repo>:latest` for that very first task, before the pipeline has ever run and produced a real, SHA-tagged revision. Step 6 below does exactly that, once.
+
+---
+
+# 6. Build and push the Docker image manually (required once, before step 11)
+
+Unlike the automated build CodeBuild does for you via `task-manager/buildspec.yml` (step 7 onward, one SHA-tagged image per pipeline run), this one-time manual push is **required**: it's the only thing that ever puts a `:latest`-tagged image in ECR, which `ecs-task-definition.yaml`'s bootstrap `ContainerImage` parameter needs by default (see the note in step 5). Skip it only if you plan to pass an explicit `ContainerImage` parameter override to step 11 instead.
+
+It's also useful as a sanity check regardless: if this step works, you know the `Dockerfile`, the app, and your ECR permissions are fine, so anything that fails later in CodeBuild is a **pipeline/CodeBuild** problem, not a **Docker/app** problem.
+
+```powershell
+$ecrUri = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-ecr-uri'].Value" `
+  --output text
+
+$ecrUri
+```
+
+Log in to ECR, then build from the `task-manager/` directory (that's where the `Dockerfile`, `package.json`, and application code live — the same build context CodeBuild uses):
+
+```powershell
+aws ecr get-login-password --region eu-west-2 | docker login --username AWS --password-stdin $ecrUri
+
+cd task-manager
+
+$imageTag = (git rev-parse --short=8 HEAD)
+Write-Host "Image tag for this manual build -> $imageTag"
+
+docker build -t "${ecrUri}:$imageTag" -t "${ecrUri}:latest" .
+
+cd ..
+```
+
+Check the image size (target: under 200 MB):
+
+```powershell
+docker images "${ecrUri}:$imageTag"
+```
+
+Push both tags:
+
+```powershell
+docker push "${ecrUri}:$imageTag"
+docker push "${ecrUri}:latest"
+```
+
+**Push `:latest` here, and only here.** Nothing else in this project ever pushes `:latest` again — `buildspec.yml` deliberately only pushes the commit-SHA tag, since a moving `latest` tag isn't useful once the pipeline is producing real, traceable revisions — so there's nothing to collide with it later.
+
+### Verify
+
+```powershell
+aws ecr describe-images `
+  --repository-name taskmanager-dev `
+  --region eu-west-2 `
+  --query "imageDetails[].{Tags:imageTags,Pushed:imagePushedAt,SizeMB:imageSizeInBytes}" `
+  --output table
+```
+
+**Note:** this only proves the image builds and pushes. It does **not** run the unit tests, the coverage gate, or the SAST (Semgrep) scan — those only run inside CodeBuild/CI, via `buildspec.yml` and `.github/workflows/ci.yml`. Passing this manual step is a good sign, but it does not guarantee CodeBuild's automated build (step 7) will succeed too.
+
+---
+
+# 7. CodeBuild
+
+Use **your actual GitHub repository** here.
+
+Example:
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/codebuild.yaml `
+  --stack-name taskmanager-dev-codebuild `
+  --parameter-overrides `
+      ProjectName=taskmanager `
+      Environment=dev `
+      GitHubRepoUrl=https://github.com/khaoula-mechria/Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Then:
+
+```powershell
+aws codebuild list-projects `
+  --region eu-west-2 `
+  --query "projects[?starts_with(@,'taskmanager-dev')]" `
+  --output table
+```
+
+Then:
+
+```powershell
+aws codebuild batch-get-projects `
+  --names taskmanager-dev-build `
+  --region eu-west-2 `
+  --query "projects[0].{Name:name,Source:source.type,Repo:source.location,Branch:source.buildspec}" `
+  --output table
+```
+
+The CDC requires CodeBuild for build/test/scan, with ≥80% coverage and SAST.
+
+**Note (2026-08-14):** if this account's ECR registry uses Enhanced Scanning (see step 5's `inspector2 batch-get-account-status` check), the CodeBuild role needs `inspector2:ListCoverage` and `inspector2:ListFindings` (both `Resource: "*"`, an AWS constraint — neither action supports resource-level scoping) in addition to `ecr:DescribeImageScanFindings`. Without them, the build's ECR-scan gate (see step 14's troubleshooting) fails with `AccessDeniedException`. Already added to `codebuild.yaml`; nothing extra to do here, just don't remove them if you ever trim this policy down.
+
+---
+
+# 8. IAM + GitHub Connection
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/iam.yaml `
+  --stack-name taskmanager-dev-iam `
+  --parameter-overrides ProjectName=taskmanager Environment=dev `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws iam list-roles `
+  --region eu-west-2 `
+  --query "Roles[?starts_with(RoleName,'taskmanager-dev')].RoleName" `
+  --output table
+```
+
+Then:
+
+```powershell
+aws codestar-connections list-connections `
+  --region eu-west-2 `
+  --query "Connections[].{Name:ConnectionName,Status:ConnectionStatus}" `
+  --output table
+```
+
+### Important
+
+You will likely see:
+
+```text
+taskmanager-dev-github    PENDING
+```
+
+That's expected.
+
+Console:
+
+[AWS CodeConnections — eu-west-2](https://eu-west-2.console.aws.amazon.com/codesuite/settings/connections?region=eu-west-2)
+
+Click:
+
+**Update pending connection → GitHub → Authorize**
+
+Then go back to:
+
+```powershell
+aws codestar-connections list-connections `
+  --region eu-west-2 `
+  --query "Connections[].{Name:ConnectionName,Status:ConnectionStatus}" `
+  --output table
+```
+
+### You need to reach
+
+```text
+taskmanager-dev-github    AVAILABLE
+```
+
+The CDC requires GitHub as the source and an automatic pipeline trigger.
+
+---
+
+# 9. ECS Cluster
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/ecs-cluster.yaml `
+  --stack-name taskmanager-dev-ecs-cluster `
+  --parameter-overrides ProjectName=taskmanager Environment=dev `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws ecs describe-clusters `
+  --clusters taskmanager-dev-cluster `
+  --region eu-west-2 `
+  --query "clusters[0].{Name:clusterName,Status:status,Running:runningTasksCount}" `
+  --output table
+```
+
+Expected:
+
+```text
+ACTIVE    0
+```
+
+That's normal: **Fargate needs no EC2 instance**. The CDC explicitly requires ECS Fargate as the serverless runtime.
+
+---
+
+# 10. ALB
+
+```powershell
+$vpcId = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-vpc-id'].Value" `
+  --output text
+
+$pubSub = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-public-subnet-ids'].Value" `
+  --output text
+
+$vpcId
+$pubSub
+```
+
+Both must return a value.
+
+Then:
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/alb.yaml `
+  --stack-name taskmanager-dev-alb `
+  --parameter-overrides `
+      ProjectName=taskmanager `
+      Environment=dev `
+      VpcId=$vpcId `
+      "PublicSubnetIds=$pubSub" `
+      ContainerPort=3000 `
+      HealthCheckPath=/health `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws elbv2 describe-load-balancers `
+  --names taskmanager-dev-alb `
+  --region eu-west-2 `
+  --query "LoadBalancers[0].{DNS:DNSName,State:State.Code}" `
+  --output table
+```
+
+The CDC explicitly requires an ALB with Blue/Green target groups.
+
+---
+
+# 11. Task Definition
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/ecs-task-definition.yaml `
+  --stack-name taskmanager-dev-taskdef `
+  --parameter-overrides `
+      ProjectName=taskmanager `
+      Environment=dev `
+      ContainerCpu=256 `
+      ContainerMemory=512 `
+      ContainerPort=3000 `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws ecs describe-task-definition `
+  --task-definition taskmanager-dev-task `
+  --region eu-west-2 `
+  --query "taskDefinition.{Revision:revision,CPU:cpu,Memory:memory,Image:containerDefinitions[0].image}" `
+  --output table
+```
+
+---
+
+# 12. ECS Service — **1 task only, to save cost**
+
+Deliberately reducing to:
+
+```text
+DesiredCount=1
+```
+
+The CDC requires automatic scaling but does not fix the initial task count, and `DesiredCount=1` keeps the Fargate cost down for this test run.
+
+```powershell
+$vpcId = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-vpc-id'].Value" `
+  --output text
+
+$privSub = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-private-subnet-ids'].Value" `
+  --output text
+
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/ecs-service.yaml `
+  --stack-name taskmanager-dev-ecs-service `
+  --parameter-overrides `
+      ProjectName=taskmanager `
+      Environment=dev `
+      VpcId=$vpcId `
+      "PrivateSubnetIds=$privSub" `
+      ContainerPort=3000 `
+      DesiredCount=1 `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Then:
+
+```powershell
+aws ecs describe-services `
+  --cluster taskmanager-dev-cluster `
+  --services taskmanager-dev-service `
+  --region eu-west-2 `
+  --query "services[0].{Status:status,Desired:desiredCount,Running:runningCount,Controller:deploymentController.type}" `
+  --output table
+```
+
+### Expected
+
+```text
+ACTIVE    1    1    CODE_DEPLOY
+```
+
+Then:
+
+```powershell
+$tgBlue = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-tg-blue-arn'].Value" `
+  --output text
+
+aws elbv2 describe-target-health `
+  --target-group-arn $tgBlue `
+  --region eu-west-2 `
+  --query "TargetHealthDescriptions[].{Target:Target.Id,Health:TargetHealth.State}" `
+  --output table
+```
+
+### Expected
+
+```text
+healthy
+```
+
+Then:
+
+```powershell
+$dns = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-alb-dns'].Value" `
+  --output text
+
+$dns
+Invoke-RestMethod "http://$dns/health"
+```
+
+### You want to get
+
+```text
+status : ok
+```
+
+This concretely validates **network → ALB → ECS → container → health check**.
+
+---
+
+# 13. Pipeline + CodeDeploy
+
+This is the most important part for the CDC.
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/pipeline.yml `
+  --stack-name taskmanager-dev-pipeline `
+  --parameter-overrides `
+      ProjectName=taskmanager `
+      Environment=dev `
+      FullRepositoryId=YOUR_USER/YOUR_REPO `
+      BranchName=main `
+      EnableManualApproval=true `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws codepipeline get-pipeline `
+  --name taskmanager-dev-pipeline `
+  --region eu-west-2 `
+  --query "pipeline.stages[].name" `
+  --output table
+```
+
+You should see the stages defined in your template.
+
+Then:
+
+```powershell
+aws deploy get-application `
+  --application-name taskmanager-dev-app `
+  --region eu-west-2
+```
+
+And:
+
+```powershell
+aws deploy get-deployment-group `
+  --application-name taskmanager-dev-app `
+  --deployment-group-name taskmanager-dev-dg `
+  --region eu-west-2 `
+  --query "deploymentGroupInfo.{Group:deploymentGroupName,ServiceRole:serviceRoleArn,Controller:deploymentStyle.deploymentType}"
+```
+
+The CDC requires CodeDeploy + Blue/Green with a **10 → 50 → 100%** traffic shift.
+
+---
+
+# 14. The test that actually proves CI/CD works
+
+Run **only one** build/pipeline execution.
+
+```powershell
+aws codepipeline start-pipeline-execution `
+  --name taskmanager-dev-pipeline `
+  --region eu-west-2
+```
+
+Then:
+
+```powershell
+aws codepipeline get-pipeline-state `
+  --name taskmanager-dev-pipeline `
+  --region eu-west-2 `
+  --query "stageStates[].{Stage:stageName,Status:latestExecution.status}" `
+  --output table
+```
+
+### You want to see
+
+```text
+Source       Succeeded
+Build        Succeeded
+...
+Deploy       Succeeded
+```
+
+The CDC requires that a push to `main` triggers the pipeline in under 60 seconds, that failing tests block the pipeline, and that the previous version stays available during the traffic shift.
+
+For the real, automatic trigger test:
+
+```text
+git add .
+git commit -m "test CI/CD AWS"
+git push origin main
+```
+
+Then immediately:
+
+```powershell
+aws codepipeline get-pipeline-state `
+  --name taskmanager-dev-pipeline `
+  --region eu-west-2 `
+  --query "stageStates[].{Stage:stageName,Status:latestExecution.status}" `
+  --output table
+```
+
+## Troubleshooting: Build fails at the SAST (Semgrep) step
+
+**Symptom:** the pipeline's Build stage (or the `.github/workflows/ci.yml` "SAST (Semgrep)" job) fails. The log shows Semgrep's scan summary ending in something like:
+
+```text
+✅ Scan completed successfully.
+ • Findings: 1 (1 blocking)
+Ran 242 rules on 12 files: 1 finding.
+Error: Process completed with exit code 1.
+```
+
+**Why:** `buildspec.yml` and `ci.yml` both run `semgrep --config auto --error ...`. The `--error` flag fails the build on **any** finding, regardless of that rule's own severity label (INFO/WARNING/ERROR are just metadata — `--error` doesn't filter by them). In this app, that one finding was Semgrep's built-in `express-check-csurf-middleware-usage` audit rule (an INFO-level suggestion, not an actual vulnerability here). The rule always matches the `const app = express()` initialization line — never the individual route handlers.
+
+**This took two fixes to actually resolve**, both in `task-manager/src/app.js`:
+1. An earlier suppression comment sat above the `/add`/`/toggle`/`/delete` routes instead of above `const app = express()` — wrong line, so it silently matched nothing.
+2. After moving it to the right line, it *still* failed, because the rule's real `check_id` isn't the path-derived name you'd expect from its registry page (`javascript.express.security.audit.express-check-csurf-middleware-usage`) — Semgrep appends the rule's own `id:` field a second time, so the actual id is `javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage`. A `// nosemgrep: <id>` comment has to match that exact string or it's a silent no-op — Semgrep doesn't warn you that your suppression matched nothing.
+
+**How this was verified**, since the console summary never shows the rule id and the failed run's log/artifact both require GitHub auth to fetch: installed Semgrep in WSL (`pip install semgrep`, same 1.173.0 version CI uses) and ran the identical `semgrep --config auto --error --json --output semgrep-report.json .` from `task-manager/` directly against the working tree. The JSON's `results[].check_id` field is the ground truth for the exact string a `nosemgrep:` comment must match. **Lesson for next time:** if you're not sure a `nosemgrep:<id>` suppression is actually taking effect, don't trust the id shown on the rule's semgrep.dev page — run Semgrep locally (WSL if on Windows; the CLI has no native Windows build) and read `check_id` straight from the JSON output before pushing.
+
+**If a different or additional finding shows up:** the console summary only prints finding *counts*, never the rule id/file/line/message — that detail only exists in `semgrep-report.json`. To read it:
+- **Locally:** run the command above and open the JSON, or skip `--output` and read `results[].check_id` / `.path` / `.start.line` / `.extra.message` directly.
+- **CodeBuild:** `buildspec.yml` already `cat`s that file to the build log (CloudWatch Logs, PRE_BUILD phase) whenever the gate fails — just scroll to the `pre_build` section of the failed build's log.
+- **GitHub Actions:** download the `test-reports` artifact from the failed run's summary page and open `semgrep-report.json` inside it (requires being logged in).
+
+## Troubleshooting: Build fails at the `docker push` step with "tag invalid: ... already exists"
+
+**Symptom:** the Build stage fails at `POST_BUILD`, on the `docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"` command, even on a **brand-new commit** whose SHA-tag was never pushed before:
+
+```text
+tag invalid: The image tag '<sha>' already exists in the 'taskmanager-dev' repository
+and cannot be overwritten because the tag is immutable.
+```
+
+**Why:** this was a real, repeatable bug hit on 2026-08-14, not a one-off. Checking ECR's own `imagePushedAt` timestamp against the build's failure timestamp showed the image had **already landed in ECR seconds before** `docker push` reported failure — the push actually succeeded server-side, but the CLI (CodeBuild's `standard:7.0` image ships a BuildKit-based Docker engine) still exited non-zero against the repo's `IMMUTABLE` tag policy. This is a known, unfixed BuildKit/ECR interaction: [moby/buildkit#3776](https://github.com/moby/buildkit/issues/3776), closed by the maintainers as "not planned." It happened on every single build, not just re-runs of an old commit — don't waste time pushing empty commits to "get a fresh tag," that doesn't help.
+
+**Fix:** the ECR repo is `MUTABLE` now (see step 5) — that's the actual fix, already applied. If you ever consider switching back to `IMMUTABLE` for stronger traceability, know that it will bring this exact failure back on every build. It doesn't cost real traceability here: `IMAGE_TAG` is always the commit SHA, so a given tag is only ever pushed once with the same content anyway.
+
+---
+
+## Troubleshooting: Build fails at the ECR scan-gate step (`SCAN ECR`)
+
+**Symptom 1 — `AccessDeniedException: ... inspector2:ListCoverage` or `...inspector2:ListFindings`.**
+**Why:** this account's ECR registry uses Enhanced Scanning (Amazon Inspector v2), not Basic Scanning (confirm with `aws inspector2 batch-get-account-status`, see step 5). Under Enhanced Scanning, `ecr describe-image-scan-findings` and the old `ecr wait image-scan-complete` both proxy to Inspector v2 APIs, which need their own permissions in the CodeBuild role — `ecr:DescribeImageScanFindings` alone isn't enough.
+**Fix:** already added to `codebuild.yaml` (see step 7's note). If you rebuild the IAM policy from scratch, both `inspector2:ListCoverage` and `inspector2:ListFindings` (with `Resource: "*"`) are required.
+
+**Symptom 2 — the build hangs or fails on `aws ecr wait image-scan-complete` with `ScanNotFoundException`, even with the permissions above fixed.**
+**Why:** the `image-scan-complete` waiter polls for `imageScanStatus.status == COMPLETE`. That status only exists under **Basic** Scanning. Under **Enhanced Scanning in continuous mode** (this account), the status stays `ACTIVE` ("Continuous scan is selected for image") forever, and the API returns `ScanNotFoundException` for the first minute or so after a push while Inspector ingests the image — the waiter treats both as fatal, so the gate could never pass.
+**Fix:** `buildspec.yml`'s `POST_BUILD` phase no longer uses the waiter. It polls `describe-image-scan-findings` directly (up to 30 attempts, 10s apart), accepting either `ACTIVE` or `COMPLETE` **and** requiring `imageScanFindings.imageScanCompletedAt` to be present (status alone can appear before findings are actually populated — trusting status alone would let a still-empty scan through as "zero vulnerabilities" by mistake). Already applied; nothing to change unless AWS alters this behavior again.
+
+**Symptom 3 — the gate blocks the build with `N vulnerabilite(s) CRITICAL -> deploiement bloque`.**
+**Why:** that's the gate doing its job (US-05), not a bug. On 2026-08-14 the `task-manager` image (node:20-alpine base) carried 2 CRITICAL + 30 HIGH CVEs (per the ECR/Inspector v2 scan). All of them traced to two sources, confirmed with a local Trivy scan: the globally-bundled `npm`/`npx`/`corepack` CLI tools (never invoked in production — the container only runs `node server.js`), and 2 unpatched Alpine OS packages (OpenSSL). None were in the app's own dependencies (`task-manager/package.json`), which came back clean both times.
+**Fixed (2026-08-15, `task-manager/Dockerfile`, commit `ed352c1`):** `apk upgrade --no-cache` picks up the Alpine patch; `rm -rf` on npm/npx/corepack and their `/usr/local/lib/node_modules` entries removes the bundled CLI tools after `npm ci --omit=dev` (which still needs them) completes. Rescanned locally with Trivy afterward: **0 findings of any severity**, either target. Image size barely moved (47.6 → 50.2 MB via `docker inspect`, still well under the 200 MB target), and the app still passes its health check.
+**Confirmed against the real scan (2026-08-15):** redeployed just `secrets` + `ecr` + `codebuild` (no VPC/ALB/ECS needed — see the standalone-build tip below) and ran `codebuild start-build` against the current GitHub source. Real Inspector v2 result: `CRITICAL=0 HIGH=0 MEDIUM=1 LOW=0` (even cleaner than the local Trivy scan, which found 0 across every severity). Full chain verified end-to-end: Docker build → push → Inspector scan → gate check → `BUILD SUCCEEDED`. This is the first fully green CodeBuild run this project has had.
+
+**Tip — iterate on `buildspec.yml` without paying for the full stack:** `taskmanager-dev-build`'s CodeBuild project has `Source: GITHUB` + `Artifacts: NO_ARTIFACTS` and no `VpcConfig`, so it can run standalone, independent of the pipeline, ALB, ECS, or even the VPC stack:
+
+```powershell
+aws codebuild start-build --project-name taskmanager-dev-build --region eu-west-2
+```
+
+```powershell
+aws codebuild batch-get-builds --ids <build-id> --region eu-west-2 `
+  --query "builds[0].{Status:buildStatus,Phase:currentPhase}" --output table
+```
+
+This exercises the entire buildspec — SAST, tests, coverage, Docker build, ECR push, and the scan gate — against whatever's on the branch right now. Only `ecr`, `codebuild`, `secrets`, and `iam` need to be deployed for this to work. Use it to debug a buildspec change before spending a full pipeline execution (or the NAT/ALB cost of having the rest of the stack up) on it.
+
+---
+
+# 15. Autoscaling
+
+To save cost:
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/ecs-autoscaling.yaml `
+  --stack-name taskmanager-dev-autoscaling `
+  --parameter-overrides `
+      ProjectName=taskmanager `
+      Environment=dev `
+      MinCapacity=1 `
+      MaxCapacity=2 `
+      TargetCpuUtilization=70 `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws application-autoscaling describe-scalable-targets `
+  --service-namespace ecs `
+  --resource-ids service/taskmanager-dev-cluster/taskmanager-dev-service `
+  --region eu-west-2 `
+  --query "ScalableTargets[0].{Min:MinCapacity,Max:MaxCapacity}" `
+  --output table
+```
+
+### Expected
+
+```text
+1    2
+```
+
+This covers the CDC's HPA-like requirement.
+
+---
+
+# 16. Observability
+
+```powershell
+aws cloudformation deploy `
+  --template-file infrastructure/cloudformation/observability.yml `
+  --stack-name taskmanager-dev-observability `
+  --parameter-overrides `
+      ProjectName=taskmanager `
+      Environment=dev `
+      AlarmEmail=YOUR_EMAIL `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --region eu-west-2
+```
+
+Verify:
+
+```powershell
+aws cloudwatch describe-alarms `
+  --region eu-west-2 `
+  --alarm-name-prefix taskmanager-dev `
+  --query "MetricAlarms[].{Name:AlarmName,State:StateValue}" `
+  --output table
+```
+
+Then:
+
+```powershell
+aws logs describe-log-groups `
+  --region eu-west-2 `
+  --query "logGroups[?contains(logGroupName,'taskmanager')].{Name:logGroupName,Retention:retentionInDays}" `
+  --output table
+```
+
+### Expected
+
+Retention:
+
+```text
+30
+```
+
+The CDC requires centralized logs with 30-day retention, a CloudWatch dashboard, pipeline metrics, and an alarm for pipelines running over 15 minutes.
+
+And confirm the SNS email subscription:
+
+```powershell
+aws sns list-subscriptions `
+  --region eu-west-2 `
+  --query "Subscriptions[?contains(Endpoint,'@')].{Email:Endpoint,Status:SubscriptionArn}" `
+  --output table
+```
+
+If you receive **AWS Notification – Subscription Confirmation**, click it.
+
+---
+
+# 17. CDC CHECKLIST — what needs to be visible
+
+| CDC requirement    | Evidence to show                             |
+| ------------------ | --------------------------------------------- |
+| CloudFormation/IaC | 12 stacks `CREATE_COMPLETE`                   |
+| VPC/subnets/SG     | VPC console + Resource Map                    |
+| ECR                | repository + `ScanOnPush=true`                |
+| ECS Fargate        | service `ACTIVE`, tasks `RUNNING`             |
+| ALB                | DNS + target `healthy`                        |
+| Secrets            | secrets present in Secrets Manager            |
+| CodeBuild          | build `SUCCEEDED`                             |
+| Tests ≥80%         | CodeBuild Reports / coverage                  |
+| SAST               | CodeBuild logs + SAST step                    |
+| CodePipeline       | pipeline with succeeded stages                |
+| GitHub trigger     | push to `main` → pipeline runs                |
+| CodeDeploy         | Blue/Green deployment                         |
+| 10→50→100          | traffic-shifting screen                       |
+| Rollback           | failed deployment then rollback               |
+| Autoscaling        | `Min=1 Max=2`                                 |
+| CloudWatch         | dashboard                                     |
+| Logs               | `/ecs/...` and `/aws/codebuild/...`, 30 days  |
+| SNS                | email received                                |
+| Alarm >15 min      | CloudWatch alarm                              |
+
+This checklist maps directly to the CDC's functional requirements.
+
+---
+
+---
+
+# 18. Testing the automatic Blue/Green rollback
+
+Prove, on the real AWS account, that CodeDeploy detects a faulty deployment and
+shifts back automatically. This is requirement F3 of the CDC.
+
+Scenario: **healthy deployment #1 -> deliberately unhealthy deployment #2 ->
+CodeDeploy detects the health-check failure -> automatic rollback -> BLUE stays
+in production.**
+
+Run this BEFORE the teardown in step 19 — it needs the stack up.
+
+> The procedure below is in French, as originally written.
+
+### 1. D'abord : vérifier que l'auto-rollback est réellement activé
+
+Après ton premier déploiement réussi :
+
+```powershell
+aws deploy get-deployment-group `
+  --application-name taskmanager-dev-app `
+  --deployment-group-name taskmanager-dev-dg `
+  --region eu-west-2 `
+  --query "deploymentGroupInfo.autoRollbackConfiguration"
+```
+
+#### Tu veux voir
+
+```text
+enabled : True
+events  : DEPLOYMENT_FAILURE
+```
+
+Si ce n'est **pas** activé, active-le :
+
+```powershell
+aws deploy update-deployment-group `
+  --application-name taskmanager-dev-app `
+  --current-deployment-group-name taskmanager-dev-dg `
+  --auto-rollback-configuration enabled=true,events=DEPLOYMENT_FAILURE `
+  --region eu-west-2
+```
+
+Puis revérifie :
+
+```powershell
+aws deploy get-deployment-group `
+  --application-name taskmanager-dev-app `
+  --deployment-group-name taskmanager-dev-dg `
+  --region eu-west-2 `
+  --query "deploymentGroupInfo.autoRollbackConfiguration"
+```
+
+**Ne continue pas tant que `enabled=True` n'est pas confirmé.**
+
+---
+
+### 2. Prouver que la version 1 est saine
+
+Avant de casser volontairement la V2 :
+
+```powershell
+$dns = aws cloudformation list-exports `
+  --region eu-west-2 `
+  --query "Exports[?Name=='taskmanager-dev-alb-dns'].Value" `
+  --output text
+
+Invoke-RestMethod "http://$dns/health"
+```
+
+Tu dois avoir :
+
+```text
+status : ok
+```
+
+Puis :
+
+```powershell
+aws deploy list-deployments `
+  --application-name taskmanager-dev-app `
+  --deployment-group-name taskmanager-dev-dg `
+  --region eu-west-2 `
+  --query "deployments[0:5]" `
+  --output table
+```
+
+Et :
+
+```powershell
+aws ecs describe-services `
+  --cluster taskmanager-dev-cluster `
+  --services taskmanager-dev-service `
+  --region eu-west-2 `
+  --query "services[0].{Desired:desiredCount,Running:runningCount,Controller:deploymentController.type}" `
+  --output table
+```
+
+Tu dois avoir :
+
+```text
+Desired    Running    Controller
+1          1          CODE_DEPLOY
+```
+
+Le guide confirme que le service ECS utilise `DeploymentController: CODE_DEPLOY` et que le service est relié au target group Blue. 
+
+---
+
+### 3. Créer volontairement une V2 qui échoue au health check
+
+C'est la méthode que je recommande.
+
+Ton ALB utilise :
+
+```text
+/health
+```
+
+comme health check. 
+
+Dans ton application, modifie **temporairement** `/health` pour retourner HTTP 500.
+
+Par exemple, si ton application Node/Express contient :
+
+```javascript
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok' });
+});
+```
+
+pour le test V2, remplace temporairement par :
+
+```javascript
+app.get('/health', (req, res) => {
+    res.status(500).json({ status: 'rollback-test' });
+});
+```
+
+**Ne change rien d'autre.**
+
+Puis :
+
+```powershell
+git add .
+git commit -m "test rollback - unhealthy health check"
+git push origin main
+```
+
+---
+
+### 4. Regarder le pipeline
+
+Immédiatement :
+
+```powershell
+aws codepipeline get-pipeline-state `
+  --name taskmanager-dev-pipeline `
+  --region eu-west-2 `
+  --query "stageStates[].{Stage:stageName,Status:latestExecution.status}" `
+  --output table
+```
+
+Tu veux voir quelque chose comme :
+
+```text
+Source       Succeeded
+Build        Succeeded
+Scan         Succeeded
+Deploy       InProgress
+```
+
+Puis :
+
+```powershell
+aws deploy list-deployments `
+  --application-name taskmanager-dev-app `
+  --deployment-group-name taskmanager-dev-dg `
+  --region eu-west-2 `
+  --query "deployments[0:3]" `
+  --output table
+```
+
+Récupère l'ID :
+
+```powershell
+$deploymentId = aws deploy list-deployments `
+  --application-name taskmanager-dev-app `
+  --deployment-group-name taskmanager-dev-dg `
+  --region eu-west-2 `
+  --query "deployments[0]" `
+  --output text
+
+$deploymentId
+```
+
+---
+
+### 5. Suivre le rollback en temps réel
+
+```powershell
+aws deploy get-deployment `
+  --deployment-id $deploymentId `
+  --region eu-west-2 `
+  --query "deploymentInfo.{Status:status,Error:errorInformation,Creator:creator}" `
+  --output table
+```
+
+Répète la commande pendant le déploiement.
+
+#### Tu dois observer
+
+D'abord :
+
+```text
+InProgress
+```
+
+puis :
+
+```text
+Failed
+```
+
+et les informations d'erreur doivent indiquer un problème de déploiement/health check.
+
+Le CDC définit précisément ce scénario : si les health checks échouent pendant le déploiement, CodeDeploy doit annuler le déploiement. 
+
+---
+
+### 6. Vérifier les target groups Blue / Green
+
+C'est une **preuve très importante**.
+
+```powershell
+aws elbv2 describe-target-groups `
+  --load-balancer-arn $(
+      aws elbv2 describe-load-balancers `
+        --names taskmanager-dev-alb `
+        --region eu-west-2 `
+        --query "LoadBalancers[0].LoadBalancerArn" `
+        --output text
+  ) `
+  --region eu-west-2 `
+  --query "TargetGroups[].{Name:TargetGroupName,Port:Port,ARN:TargetGroupArn}" `
+  --output table
+```
+
+Tu dois avoir deux target groups :
+
+```text
+taskmanager-dev-...blue
+taskmanager-dev-...green
+```
+
+Le guide confirme que l'ALB possède deux target groups, **Blue et Green**, ainsi qu'un listener production et un listener de test. 
+
+---
+
+### 7. La preuve la plus forte : vérifier que Blue revient en production
+
+Après le rollback :
+
+```powershell
+aws deploy get-deployment `
+  --deployment-id $deploymentId `
+  --region eu-west-2 `
+  --query "deploymentInfo.status"
+```
+
+Attendu :
+
+```text
+Failed
+```
+
+Puis :
+
+```powershell
+Invoke-RestMethod "http://$dns/health"
+```
+
+La production doit à nouveau répondre :
+
+```text
+status : ok
+```
+
+C'est essentiel : **la V2 est rejetée, mais l'application V1 reste disponible.**
+
+---
+
+### 8. Vérifier l'état ECS après rollback
+
+```powershell
+aws ecs describe-services `
+  --cluster taskmanager-dev-cluster `
+  --services taskmanager-dev-service `
+  --region eu-west-2 `
+  --query "services[0].deployments[].{ID:id,Status:status,TaskDefinition:taskDefinition,Desired:desiredCount,Running:runningCount}" `
+  --output table
+```
+
+Après rollback, tu veux essentiellement retrouver **la version saine** en production.
+
+Puis :
+
+```powershell
+aws ecs list-tasks `
+  --cluster taskmanager-dev-cluster `
+  --service-name taskmanager-dev-service `
+  --region eu-west-2 `
+  --desired-status RUNNING
+```
+
+---
+
+### 9. Vérifier précisément pourquoi la V2 a été rejetée
+
+```powershell
+aws deploy get-deployment `
+  --deployment-id $deploymentId `
+  --region eu-west-2 `
+  --query "deploymentInfo.errorInformation"
+```
+
+Puis :
+
+```powershell
+aws ecs describe-services `
+  --cluster taskmanager-dev-cluster `
+  --services taskmanager-dev-service `
+  --region eu-west-2 `
+  --query "services[0].events[0:10].message" `
+  --output table
+```
+
+Et les logs :
+
+```powershell
+aws logs tail /ecs/taskmanager-dev `
+  --region eu-west-2 `
+  --since 10m
+```
+
+---
+
+### 10. Console AWS : les 3 écrans à capturer
+
+#### A. CodePipeline
+
+[CodePipeline — eu-west-2](https://eu-west-2.console.aws.amazon.com/codesuite/codepipeline/pipelines/taskmanager-dev-pipeline/view?region=eu-west-2&utm_source=chatgpt.com)
+
+Capture montrant :
+
+```text
+Source    ✓
+Build     ✓
+Scan      ✓
+Deploy    ✗
+```
+
+---
+
+#### B. CodeDeploy
+
+[CodeDeploy Deployments — eu-west-2](https://eu-west-2.console.aws.amazon.com/codesuite/codedeploy/deployments?region=eu-west-2&utm_source=chatgpt.com)
+
+C'est **la meilleure capture pour ton rapport**.
+
+Tu veux montrer :
+
+```text
+Deployment
+   ↓
+Green environment
+   ↓
+Health check failure
+   ↓
+Deployment failed
+   ↓
+Rollback
+   ↓
+Blue remains active
+```
+
+Le guide indique également que l'écran CodeDeploy **Traffic shifting progress** est la vue la plus parlante pour démontrer le Blue/Green. 
+
+---
+
+#### C. ECS
+
+[ECS Clusters — eu-west-2](https://eu-west-2.console.aws.amazon.com/ecs/v2/clusters?region=eu-west-2&utm_source=chatgpt.com)
+
+Montre :
+
+```text
+Service
+Deployment controller: CODE_DEPLOY
+Running: 1
+Desired: 1
+```
+
+---
+
+### 11. Attention : ton test `/health = 500` peut échouer avant le traffic shift
+
+C'est normal.
+
+Si CodeDeploy détecte que Green n'est jamais `healthy`, il peut échouer **avant même le 10 %**.
+
+Cela prouve :
+
+> **Green unhealthy → deployment failure → automatic rollback**
+
+mais pas forcément :
+
+> **10 % → 50 % → health failure → rollback**
+
+Le CDC demande le traffic shifting 10 % → 50 % → 100 % et le rollback en cas de health-check failure pendant le shift. 
+
+#### Pour une démonstration encore plus forte
+
+Une deuxième approche consiste à provoquer une défaillance **après que Green est devenu healthy**, pendant le traffic shifting, par exemple avec une alarme/condition de déploiement. Mais je ne te conseille pas de commencer par cela : c'est plus délicat et dépend exactement de la configuration de ton `pipeline.yml`/CodeDeploy.
+
+---
+
+### 12. Restaurer immédiatement l'application
+
+Une fois la preuve obtenue :
+
+```javascript
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok' });
+});
+```
+
+Puis :
+
+```powershell
+git add .
+git commit -m "restore healthy health check"
+git push origin main
+```
+
+Fais **un dernier déploiement sain**, vérifie :
+
+```powershell
+Invoke-RestMethod "http://$dns/health"
+```
+
+Puis tu peux supprimer toute l'infrastructure.
+
+---
+
+### Ce qui constitue la preuve finale du CDC
+
+| Preuve                   | Résultat attendu              |
+| ------------------------ | ----------------------------- |
+| V1                       | `Succeeded`                   |
+| V1 `/health`             | HTTP 200                      |
+| V2                       | nouvelle image/commit         |
+| Green                    | créé                          |
+| Green health check       | `unhealthy`                   |
+| CodeDeploy               | `Failed`                      |
+| Auto rollback            | `enabled=True`                |
+| Blue                     | reste production              |
+| `/health` après rollback | HTTP 200                      |
+| CodePipeline             | Deploy échoué                 |
+| ECS                      | service toujours opérationnel |
+
+Le CDC demande explicitement le test d'un rollback automatique par simulation d'échec. 
+
+#### Trois approches
+
+1. **`/health` → 500 — recommandée** : simple, contrôlée, reproductible.
+2. **Arrêter volontairement une tâche Green** : utile si tu veux provoquer une panne runtime, mais plus difficile à synchroniser.
+3. **Alarme CloudWatch pendant le traffic shift** : meilleure démonstration avancée, mais seulement si ton CodeDeploy est configuré pour utiliser cette alarme.
+
+> L'etape 1 est le point de depart : sa sortie `autoRollbackConfiguration`
+> determine si l'infrastructure est reellement prete pour ce test.
+
+---
+
+# 19. BEFORE going over 1 hour: DELETE EVERYTHING
+
+**Do not delete in an arbitrary order.**
+
+```powershell
+$stacks = @(
+    "taskmanager-dev-observability",
+    "taskmanager-dev-autoscaling",
+    "taskmanager-dev-pipeline",
+    "taskmanager-dev-ecs-service",
+    "taskmanager-dev-taskdef",
+    "taskmanager-dev-alb",
+    "taskmanager-dev-ecs-cluster",
+    "taskmanager-dev-iam",
+    "taskmanager-dev-codebuild",
+    "taskmanager-dev-ecr",
+    "taskmanager-dev-secrets",
+    "taskmanager-dev-vpc"
+)
+
+foreach ($s in $stacks) {
+    Write-Host "DELETE $s" -ForegroundColor Yellow
+    aws cloudformation delete-stack `
+        --stack-name $s `
+        --region eu-west-2
+
+    aws cloudformation wait stack-delete-complete `
+        --stack-name $s `
+        --region eu-west-2
+}
+```
+
+The reverse order is required because of the `Fn::ImportValue` dependencies between stacks.
+
+### If `taskmanager-dev-vpc` ends up `DELETE_FAILED`
+
+**Symptom:** `describe-stack-events` shows `PrivateSubnet1`/`PrivateSubnet2` failed to delete with `"has dependencies and cannot be deleted"`.
+
+**Why:** if GuardDuty is enabled on this account, it auto-creates a `com.amazonaws.<region>.guardduty-data` interface VPC endpoint inside every VPC it monitors (tagged `GuardDutyManaged: true`). It isn't part of any CloudFormation stack, so CFN can't remove it, and its ENIs pin the private subnets.
+
+**Fix:** find and delete it, then retry the stack delete.
+
+```powershell
+aws ec2 describe-vpc-endpoints `
+  --region eu-west-2 `
+  --filters "Name=service-name,Values=com.amazonaws.eu-west-2.guardduty-data" `
+  --query "VpcEndpoints[?VpcId=='<taskmanager-vpc-id>'].VpcEndpointId" `
+  --output text
+```
+
+```powershell
+aws ec2 delete-vpc-endpoints --region eu-west-2 --vpc-endpoint-ids <id-from-above>
+```
+
+Wait ~1-2 minutes for the ENIs to detach, then re-run the `delete-stack` / `wait stack-delete-complete` pair from above for `taskmanager-dev-vpc`.
+
+**If it then fails a second time, on the `Vpc` resource itself** ("has dependencies and cannot be deleted"), check for a leftover **GuardDuty-managed security group** — GuardDuty creates one alongside its VPC endpoint (named `GuardDutyManagedSecurityGroup-<vpc-id>`), and AWS won't delete a VPC while any non-default security group still exists in it, even an unattached one:
+
+```powershell
+aws ec2 describe-security-groups --region eu-west-2 `
+  --filters "Name=vpc-id,Values=<taskmanager-vpc-id>" `
+  --query "SecurityGroups[?GroupName!='default'].{Id:GroupId,Name:GroupName}" --output table
+```
+
+```powershell
+aws ec2 delete-security-group --region eu-west-2 --group-id <id-from-above>
+```
+
+Then retry `delete-stack` / `wait stack-delete-complete` once more.
+
+**Caution — don't touch VPCs you don't recognize.** While hunting this endpoint, it's easy to `describe-vpc-endpoints`/`describe-vpcs` and see *other* VPCs in the account with a similar `10.0.0.0/16` CIDR. That CIDR match is a coincidence, not a sign they're related to this project — check each VPC's `Name` tag before deleting anything on it. This account has at least one unrelated VPC (tagged `smartovate-cicd-vpc`) that must be left alone.
+
+---
+
+# 20. Final check — IMPORTANT
+
+```powershell
+aws cloudformation list-stacks `
+  --region eu-west-2 `
+  --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE DELETE_FAILED `
+  --query "StackSummaries[?starts_with(StackName,'taskmanager-dev')].{Stack:StackName,Status:StackStatus}" `
+  --output table
+```
+
+Then:
+
+```powershell
+aws ec2 describe-nat-gateways `
+  --region eu-west-2 `
+  --filter "Name=state,Values=available,pending" `
+  --query "NatGateways[].{ID:NatGatewayId,State:State}" `
+  --output table
+```
+
+Then:
+
+```powershell
+aws elbv2 describe-load-balancers `
+  --region eu-west-2 `
+  --query "LoadBalancers[?contains(LoadBalancerName,'taskmanager')].LoadBalancerName" `
+  --output table
+```
+
+Then:
+
+```powershell
+aws ecs list-tasks `
+  --cluster taskmanager-dev-cluster `
+  --region eu-west-2
+```
+
+### Final goal
+
+```text
+taskmanager-dev stacks: none
+Available NAT Gateways: none
+taskmanager ALBs: none
+Running ECS tasks: none
+```
+
+---
+
+## The 4 things to watch most closely
+
+**1. Secrets Manager's recovery window *can* block a fast redeploy — but a plain `delete-stack` teardown of `taskmanager-dev-secrets` has NOT reproduced this so far.**
+The general risk is real and well-documented: `AWS::SecretsManager::Secret` normally holds a deleted secret's name for a recovery window (default ~30 days) before it's reusable, and `secrets-manager.yaml` sets no `RecoveryWindowInDays`/force-delete property to skip that. If it happens, redeploying the stack soon after a teardown fails with `... already scheduled for deletion`, and the fix is:
+```powershell
+aws secretsmanager delete-secret --secret-id taskmanager/dev/db --force-delete-without-recovery --region eu-west-2
+aws secretsmanager delete-secret --secret-id taskmanager/dev/api-key --force-delete-without-recovery --region eu-west-2
+```
+**However**, re-verified on 2026-08-15 with a controlled test (deploy `secrets` alone → `delete-stack` → immediately `describe-secret`): both secrets came back `ResourceNotFoundException` right away, not "pending deletion" — i.e. a full stack *deletion* purged them immediately, three separate times this session, with no explicit force-delete step. This suggests CloudFormation's own deletion path for this resource type may already delete without the recovery window by default (undocumented, not something this template configures). The scenario the force-delete commands above still protect against: a **stack update that replaces** the secret resource (rather than a full stack delete), or a secret deleted directly via console/CLI outside of CloudFormation — both go through the standard Secrets Manager API default, which does keep the recovery window. Keep the force-delete commands in your back pocket for those cases; don't assume you need to run them after an ordinary full teardown of this stack.
+
+**2. GitHub Connection = `AVAILABLE`**
+Don't start the pipeline until this shows `AVAILABLE`.
+
+**3. Never leave the NAT Gateway running after the test.**
+It's the main ongoing cost called out throughout this guide.
+
+**4. GuardDuty can leave `taskmanager-dev-vpc` stuck in `DELETE_FAILED`.**
+See step 19's dedicated troubleshooting note — delete the auto-created `guardduty-data` VPC endpoint, then retry.
+
+### Approaches
+
+* **Recommended for now:** deploy everything → 1 successful pipeline run → verify against the CDC checklist → delete everything.
+* **Minimal budget:** stop after ECS + ALB, but then you haven't demonstrated the full CI/CD flow.
+* **Maximum demonstration:** add a second deployment and trigger a rollback; only useful if you actually need to show the Blue/Green/rollback mechanism.
+
+**Immediate next step (as of 2026-08-15):** all three CodeBuild-stage bugs (immutable-tag false failure, broken scan waiter, missing Inspector IAM permissions) plus the Dockerfile CVE fix are committed **and confirmed working end-to-end via a standalone `codebuild start-build`** against the real account (`CRITICAL=0 HIGH=0`, `BUILD SUCCEEDED` — see this section's Symptom 3). Only `secrets`/`ecr`/`codebuild` were deployed for that test; `vpc`/`iam`/`ecs-*`/`alb`/`pipeline`/`autoscaling`/`observability` are still torn down. Next real test: deploy the remaining stacks (steps 3, 8-16) and run an actual pipeline execution — this should be the first run to ever reach Approval/Deploy, which is still genuinely untested territory (CodeDeploy Blue/Green, the traffic shift, ECS/ALB health).
+
+---
+
+# Appendix — architecture diagrams
+
+Operational reference for the stacks deployed above.
+
+## Flux de déploiement (Deployment flow)
+
+```mermaid
+sequenceDiagram
+    actor Dev as Développeur
+    participant GH as GitHub
+    participant CBW as CodeBuild - webhook direct
+    participant CP as CodePipeline
+    participant CBP as CodeBuild - action Build
+    participant ECRr as Amazon ECR
+    participant CDp as CodeDeploy
+    participant ECSs as ECS Fargate
+
+    Dev->>GH: git push feature/*
+    GH-->>CBW: webhook (build + test uniquement)
+    CBW->>CBW: install → SAST → build Docker → tests
+    Note over CBW: Pas de déploiement,<br/>juste un retour rapide au développeur
+
+    Dev->>GH: git push main (après merge)
+    GH-->>CP: webhook via CodeStar Connection
+    activate CP
+    CP->>CP: Stage Source (récupère le code)
+    CP->>CBP: Stage Build
+    activate CBP
+    CBP->>CBP: install → SAST → build → tests + coverage ≥ 80%
+    CBP->>ECRr: docker push (tag = SHA du commit)
+    CBP->>CP: imageDetail.json + taskdef.json
+    deactivate CBP
+    CP->>CDp: Stage Deploy (action CodeDeployToECS)
+    activate CDp
+    CDp->>CDp: enregistre nouvelle Task Definition
+    CDp->>ECSs: déploie la révision "Green" à côté de "Blue"
+    CDp->>CDp: traffic shift progressif (10%→100%, ~10 min)
+    alt Health checks OK
+        CDp->>CDp: 100% du trafic sur Green, Blue terminée
+    else Health checks échouent
+        CDp->>ECSs: rollback automatique vers Blue (< 3 min)
+    end
+    deactivate CDp
+    CP-->>Dev: notification SNS (succès/échec)
+    deactivate CP
+```
+
+**Lecture** : deux chemins distincts et volontairement découplés. Les
+branches `feature/*` (et `develop`) sont validées par le webhook CodeBuild
+existant depuis `codebuild.yaml` — rapide, sans toucher à la production.
+Seul un push sur `main` déclenche le pipeline complet jusqu'au déploiement
+Blue/Green réel.
+
+---
+
+## Pipeline flow (stages CodePipeline détaillés)
+
+```mermaid
+flowchart LR
+    subgraph Source["Stage Source"]
+        S1["CodeStarSourceConnection<br/>branch: main"]
+    end
+
+    subgraph Build["Stage Build"]
+        B1["CodeBuild project<br/>taskmanager-dev-build"]
+        B2["buildspec.yml :<br/>install → pre_build (SAST + login ECR)<br/>→ build (docker) → post_build (tests + push)"]
+        B3["Artefacts générés :<br/>imageDetail.json<br/>taskdef.json (rendu depuis taskdef.template.json)"]
+    end
+
+    subgraph Deploy["Stage Deploy"]
+        D1["Action CodeDeployToECS"]
+        D2["TaskDefinitionTemplateArtifact = BuildArtifact"]
+        D3["AppSpecTemplateArtifact = SourceArtifact<br/>(appspec.yaml)"]
+        D4["Image1ContainerName = IMAGE1_NAME"]
+    end
+
+    SourceArtifact[("SourceArtifact<br/>(S3, bucket pipeline-artifacts)")]
+    BuildArtifact[("BuildArtifact<br/>(S3, bucket pipeline-artifacts)")]
+
+    S1 --> SourceArtifact
+    SourceArtifact --> B1
+    B1 --> B2 --> B3
+    B3 --> BuildArtifact
+    SourceArtifact -.->|appspec.yaml| D3
+    BuildArtifact -.->|taskdef.json + imageDetail.json| D2
+    D2 --> D1
+    D3 --> D1
+    D4 --> D1
+    D1 -->|CreateDeployment| CodeDeploy["AWS CodeDeploy<br/>DeploymentGroup Blue/Green"]
+```
+
+**Lecture** : le point clé du câblage est que `taskdef.json` (contenant les
+vrais ARN des rôles ECS, rendus au moment du build) vient de l'artefact de
+**Build**, alors que `appspec.yaml` (statique, aucune valeur spécifique au
+compte) vient directement de l'artefact **Source** — voir
+`task-manager/buildspec.yml` et `task-manager/taskdef.template.json`.
+
+---
+
+## Rôles IAM
+
+```mermaid
+flowchart LR
+    subgraph Services["Services AWS (Principal)"]
+        SvcCP["codepipeline.amazonaws.com"]
+        SvcCD["codedeploy.amazonaws.com"]
+        SvcCB["codebuild.amazonaws.com"]
+        SvcECSx["ecs-tasks.amazonaws.com"]
+        SvcLambda["lambda.amazonaws.com"]
+    end
+
+    subgraph Roles["Rôles IAM (iam.yaml / codebuild.yaml / observability.yml)"]
+        RCP["CodePipelineServiceRole"]
+        RCD["CodeDeployServiceRole<br/>(managed: AWSCodeDeployRoleForECS)"]
+        RCB["CodeBuildServiceRole"]
+        RExec["EcsTaskExecutionRole<br/>(managed: AmazonECSTaskExecutionRolePolicy)"]
+        RTask["EcsTaskRole"]
+        RMetrics["MetricsPublisherRole"]
+    end
+
+    subgraph Resources["Ressources accédées"]
+        S3b[("S3 - bucket artefacts")]
+        GHC["CodeStar Connection"]
+        ECRrepo[("ECR repository")]
+        CDapp["CodeDeploy App/DeploymentGroup"]
+        ECSrt["ecs:RegisterTaskDefinition<br/>+ iam:PassRole (Exec/Task)"]
+        Logsg[("CloudWatch Logs")]
+        Secretsm[("Secrets Manager<br/>taskmanager/dev/*")]
+        CWm["cloudwatch:PutMetricData<br/>(namespace scopé)"]
+        CPExec["codepipeline:ListPipelineExecutions"]
+    end
+
+    SvcCP -->|AssumeRole| RCP
+    SvcCD -->|AssumeRole| RCD
+    SvcCB -->|AssumeRole| RCB
+    SvcECSx -->|AssumeRole| RExec
+    SvcECSx -->|AssumeRole| RTask
+    SvcLambda -->|AssumeRole| RMetrics
+
+    RCP --> S3b
+    RCP --> GHC
+    RCP -->|codebuild:StartBuild| RCB
+    RCP --> CDapp
+    RCP --> ECSrt
+
+    RCD --> CDapp
+
+    RCB --> ECRrepo
+    RCB --> Logsg
+
+    RExec --> ECRrepo
+    RExec --> Logsg
+    RExec --> Secretsm
+
+    RTask --> CWm
+
+    RMetrics --> CPExec
+    RMetrics --> CWm
+    RMetrics --> Logsg
+```
+
+**Lecture** : chaque rôle est restreint au strict nécessaire (principe du
+moindre privilège documenté dans `iam.yaml`) — `RCP` (CodePipeline) ne peut
+déclencher QUE le projet CodeBuild et l'application CodeDeploy de CE
+projet ; `RExec` (démarrage du conteneur) et `RTask` (code applicatif) sont
+volontairement deux rôles distincts, jamais fusionnés. Le seul `*` accepté
+sans restriction est `cloudwatch:PutMetricData` (contrainte AWS — l'API
+n'accepte pas de restriction par ARN), compensé par une `Condition` sur le
+namespace.
+
+---
+
+## Réseau (VPC)
+
+```mermaid
+flowchart TB
+    IGW["Internet Gateway"]
+    Internet(["Internet"])
+    Internet <--> IGW
+
+    subgraph VPC["VPC 10.0.0.0/16 (vpc.yml)"]
+        direction LR
+
+        subgraph AZ1["AZ 1 (eu-west-2a)"]
+            direction TB
+            Pub1["Subnet public 1<br/>10.0.0.0/24"]
+            Priv1["Subnet privé 1<br/>10.0.10.0/24"]
+        end
+
+        subgraph AZ2["AZ 2 (eu-west-2b)"]
+            direction TB
+            Pub2["Subnet public 2<br/>10.0.1.0/24"]
+            Priv2["Subnet privé 2<br/>10.0.11.0/24"]
+        end
+
+        NAT1["NAT Gateway 1<br/>(toujours créé)"]
+        NAT2["NAT Gateway 2<br/>(si stratégie = ha)"]
+        S3EP["VPC Endpoint S3<br/>(Gateway, gratuit)"]
+
+        ALBsg["ALB<br/>(SG: 80/8080 depuis 0.0.0.0/0)"]
+        ECSsg["ECS Fargate tasks<br/>(SG: ContainerPort depuis ALB uniquement)"]
+    end
+
+    IGW --- Pub1
+    IGW --- Pub2
+    Pub1 --> NAT1
+    Pub2 -.-> NAT2
+
+    Priv1 -->|0.0.0.0/0| NAT1
+    Priv2 -->|single: NAT1 / ha: NAT2| NAT1
+
+    Pub1 --> ALBsg
+    Pub2 --> ALBsg
+    ALBsg --> ECSsg
+    Priv1 --- ECSsg
+    Priv2 --- ECSsg
+    Priv1 -.trafic ECR via S3.-> S3EP
+    Priv2 -.trafic ECR via S3.-> S3EP
+```
+
+**Lecture** : les tâches ECS Fargate n'ont jamais d'IP publique (subnets
+privés) ; leur seule sortie internet passe par le(s) NAT Gateway(s) —
+stratégie `single` (1 NAT partagé, ~32 $/mois, par défaut dev/staging) ou
+`ha` (1 NAT par AZ, recommandé en prod). Le VPC Endpoint S3 (gratuit)
+détourne le trafic vers le backend S3 d'ECR hors du NAT Gateway, pour
+réduire les coûts. Le security group des tâches ECS n'autorise QUE l'ALB
+en entrée — jamais 0.0.0.0/0 directement vers les conteneurs.
+
+---

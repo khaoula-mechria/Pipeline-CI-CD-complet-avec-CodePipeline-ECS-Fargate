@@ -215,7 +215,7 @@ propre sur les 11 templates.
 
 Corrigé au passage : les notes d'ordre de déploiement étaient **incohérentes entre fichiers** (`iam.yaml`
 listait encore un `ecs.yaml` inexistant, `observability.yml` une liste de 6 stacks pré-refactor) et le
-tableau de `infrastructure/README.md` annonçait toujours « les 6 stacks » alors qu'il y en avait 10. Tout
+tableau de `README.md` annonçait toujours « les 6 stacks » alors qu'il y en avait 10. Tout
 est normalisé sur une liste de référence unique de **11 stacks**.
 
 Limite connue et assumée : l'application ne **lit** pas encore ces secrets (`DB_USERNAME`, `DB_PASSWORD`,
@@ -234,7 +234,7 @@ conception notables :
 | Les 2 alarmes CloudWatch ne pilotent PAS le scaling | Target Tracking crée et gère ses **propres** alarmes internes (`TargetTracking-service/...`). Les alarmes de ce template servent à prévenir l'équipe (F4) : CPU soutenu au-delà de la cible, et surtout **capacité maximale atteinte** — le signal « l'auto scaling n'a plus de marge ». Documenté en tête du template pour éviter qu'on les câble par erreur à une policy. |
 | Cooldowns asymétriques (60 s out / 300 s in) | Réagir vite à une montée de charge, mais redescendre lentement pour éviter le battement quand la charge oscille. |
 | Aucune modification de `iam.yaml` | Application Auto Scaling utilise son rôle lié au service (`AWSServiceRoleForApplicationAutoScaling_ECSService`), créé par AWS à la première utilisation — inutile de déclarer un rôle. |
-| `DesiredCount` de `ecs-service.yaml` devient une valeur *initiale* | Dès que le `ScalableTarget` est attaché, Application Auto Scaling possède `DesiredCount`. Une mise à jour de la stack du service peut le réinitialiser transitoirement, puis l'auto scaling corrige. Comportement connu de CloudFormation + Application Auto Scaling, désormais documenté dans la description du paramètre et dans `infrastructure/README.md` plutôt que subi. |
+| `DesiredCount` de `ecs-service.yaml` devient une valeur *initiale* | Dès que le `ScalableTarget` est attaché, Application Auto Scaling possède `DesiredCount`. Une mise à jour de la stack du service peut le réinitialiser transitoirement, puis l'auto scaling corrige. Comportement connu de CloudFormation + Application Auto Scaling, désormais documenté dans la description du paramètre et dans `README.md` plutôt que subi. |
 | `RunningTaskCount` ajouté au dashboard | Sans ça, F3 serait déclarée mais invisible. Le widget ECS montre maintenant CPU et nombre de tâches sur le même graphique, avec une annotation à 70 % : on voit la charge monter puis les tâches suivre. |
 
 Vérifications : `test9-autoscaling.sh` (nouveau, chaîné dans `test7-all-local.sh` qui passe à 8 tests) —
@@ -366,7 +366,7 @@ L'audit complet (5 revues ciblées, chaque piste revérifiée avant correction) 
 
 Corrigé au passage, sans lien avec un déploiement réel mais trouvé en cours de revue : les notes « ordre de
 déploiement » de 4 templates décrivaient encore l'ancien ordre erroné (IAM avant secrets/ecr/codebuild), de
-même que le tableau principal d'`infrastructure/README.md` — en contradiction avec l'encadré juste en
+même que le tableau principal d'`README.md` — en contradiction avec l'encadré juste en
 dessous, qui donnait déjà le bon ordre ; un commentaire de `pipeline.yml` attribuait à tort la couverture
 des branches `feature/*` au webhook CodeBuild (qui ne couvre que `main`/`develop` — c'est
 `.github/workflows/ci.yml` qui s'en charge) ; `test5-pipeline.sh` omettait 2 outputs à exclure de sa copie
@@ -377,7 +377,7 @@ envisagées) est résolu : `buildspec.yml` ne pousse plus `latest` sur les build
 été détectée et corrigée avant d'être commise dans ce rapport : `ecs-task-definition.yaml` dépend de
 `<repo>:latest` pour son image de bootstrap (avant que le pipeline n'ait jamais tourné) — un premier correctif
 avait supprimé `latest` de partout, cassant ce chemin. Solution retenue : le pousser une seule fois, à la
-main, dans le guide de déploiement (`guideme2.md`), le seul moment où c'est sans risque.
+main, dans le guide de déploiement (`guide.md`), le seul moment où c'est sans risque.
 
 Vérifications effectuées après chaque correction : `cfn-lint` propre sur les 12 templates, graphe complet des
 exports/imports entre stacks recalculé sans référence pendante, `npm test` (61 tests, ~99 %), et Semgrep
