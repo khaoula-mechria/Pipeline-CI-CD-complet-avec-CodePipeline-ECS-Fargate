@@ -1,3 +1,5 @@
+> 🇬🇧 English version: [`VALIDATION_REPORT.md`](VALIDATION_REPORT.md)
+
 # Rapport de validation — Pipeline CI/CD complet (CodePipeline → CodeBuild → ECR/Inspector → CodeDeploy Blue/Green → ECS/ALB)
 
 **Projet :** taskmanager (Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate)
