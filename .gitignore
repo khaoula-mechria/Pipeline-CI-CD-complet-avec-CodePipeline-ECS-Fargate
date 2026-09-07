@@ -44,3 +44,6 @@ __pycache__/
 
 # Cache devbox
 .devbox/
+
+# Cache pytest
+.pytest_cache/
