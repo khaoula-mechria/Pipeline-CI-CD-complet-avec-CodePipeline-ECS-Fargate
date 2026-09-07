@@ -1,5 +1,3 @@
-> 🇫🇷 French version: [`rapport.md`](rapport.md)
-
 # Validation report — Complete CI/CD pipeline (CodePipeline → CodeBuild → ECR/Inspector → CodeDeploy Blue/Green → ECS/ALB)
 
 **Project:** taskmanager (Pipeline-CI-CD-complet-avec-CodePipeline-ECS-Fargate)

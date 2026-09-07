@@ -54,15 +54,15 @@ python -m pytest orchestrator/ optimizer/ explainer/ dashboard/   # 67 tests
 
 *(Mis à jour le 2026-09-07. Conformité exigence par exigence dans
 [`CONFORMITE_CDC.md`](CONFORMITE_CDC.md), preuves du run réel dans
-[`rapport.md`](rapport.md) / [`VALIDATION_REPORT.md`](VALIDATION_REPORT.md).)*
+[`VALIDATION_REPORT.md`](VALIDATION_REPORT.md).)*
 
 ### Fait
 
 - **Un run end-to-end réel a réussi sur AWS** : push GitHub → CodePipeline →
   CodeBuild (SAST, tests, image) → ECR → scan Inspector v2 → approbation
   manuelle → CodeDeploy Blue/Green → ECS Fargate, avec bascule de 100 % du
-  trafic vers GREEN derrière l'ALB. Déroulé dans [`rapport.md`](rapport.md)
-  (🇬🇧 [`VALIDATION_REPORT.md`](VALIDATION_REPORT.md)), 17 captures dans
+  trafic vers GREEN derrière l'ALB. Déroulé dans
+  [`VALIDATION_REPORT.md`](VALIDATION_REPORT.md), 17 captures dans
   [`preuves/`](preuves/).
 - **Infrastructure** : 12 stacks CloudFormation, `cfn-lint` propre, graphe
   d'exports/imports cohérent de bout en bout.
@@ -429,8 +429,8 @@ loin (LocalStack, rejeu du buildspec via l'agent CodeBuild local) :
 ├── README.md                    ← ce fichier
 ├── guide-local.md               ← tout tester en local, sans AWS
 ├── guide-aws.md                 ← déploiement AWS, étape par étape
-├── rapport.md / rapport.pdf     ← preuve du run end-to-end réussi (FR)
-├── VALIDATION_REPORT.md         ← la même, en anglais
+├── VALIDATION_REPORT.md         ← preuve du run end-to-end réussi
+├── rapport.pdf                  ← sa version PDF (encore en français)
 ├── CONFORMITE_CDC.md            ← conformité au cahier des charges
 ├── preuves/                     ← 17 captures du run réel
 ├── task-manager/                ← l'application (Node.js/Express)

@@ -258,7 +258,7 @@ The requirements specification plans four two-week sprints (July 1–14, July 15
 | July 3–13, 2026 | Repository bootstrap (GitHub governance), first application version (Flask/SQLite, task CRUD), first GitHub Actions CI | Git, GitHub Actions, Flask | Functional application, not yet integrated into an AWS pipeline |
 | July 21–30, 2026 | Writing and local validation of the ECR, CodeBuild, VPC, IAM, Pipeline/CodeDeploy, ECS/ALB (modular refactor), Observability templates; application unification onto Node.js/Express; addition of Secrets Manager and autoscaling; hardening of coverage quality gates; use of the ECR scan | `cfn-lint`, LocalStack Community, Jest/Supertest, Semgrep | Full 12-stack infrastructure written and validated offline; `CONFORMITE_CDC.md` created |
 | August 5–14, 2026 | English translation of the templates, functional enrichment of the application, full repository audit (3 preventive bugs found and fixed), SAST gate fix, GitHub Actions/CodeBuild alignment | Semgrep (WSL), GitHub Actions, cfn-lint | 61 tests / 99% coverage; no known remaining defect detectable without a real deployment |
-| August 14–17, 2026 | Real deployment of the 12 stacks on AWS, diagnosis and fix of 4 real blocking bugs, complete pipeline execution (Blue/Green validated), full infrastructure teardown, writing of the validation report | AWS CLI, AWS Console, Docker, Trivy | First fully successful end-to-end run; `rapport.md`/`rapport.pdf` produced |
+| August 14–17, 2026 | Real deployment of the 12 stacks on AWS, diagnosis and fix of 4 real blocking bugs, complete pipeline execution (Blue/Green validated), full infrastructure teardown, writing of the validation report | AWS CLI, AWS Console, Docker, Trivy | First fully successful end-to-end run; `VALIDATION_REPORT.md`/`rapport.pdf` produced |
 
 The main gap between the requirements specification's schedule and the actual execution concerns the **pace of real validation on AWS**: the CDC does not explicitly call out a phase of exhaustive local validation ahead of any deployment, whereas this phase took up most of the development time (July to mid-August), with the real deployment happening only at the very end of the period, deliberately concentrated over a few days to control cost. A second gap concerns the `ManualApproval` stage: absent from the initial template (noted by the July 28 compliance audit), it was ultimately enabled and exercised for the real validation run (`EnableManualApproval=true` parameter), which *retroactively* satisfies the F4 criterion regarding the "approval pending" state, initially classified as missing.
 
@@ -275,7 +275,7 @@ The deliverables planned by the requirements specification (section 8) and their
 | `buildspec.yml` & CI scripts | ✅ Present — `task-manager/buildspec.yml`, `.github/workflows/ci.yml` |
 | Mid-term report | **[TO BE COMPLETED]** — not found in the repository |
 | Functional CloudWatch dashboard | ✅ Implemented and deployed in real conditions — `observability.yml`, Figure 32 |
-| Final internship report | This document, complemented by `rapport.md`/`rapport.pdf` (technical validation report) |
+| Final internship report | This document, complemented by `VALIDATION_REPORT.md`/`rapport.pdf` (technical validation report) |
 | Defense slides | **[TO BE COMPLETED]** — not found in the repository |
 
 ## Chapter Conclusion
@@ -1149,7 +1149,7 @@ See §1.6.2, Table 2, and section 5 of the requirements specification for the fu
 | Chronological progress journal | `so-far.md` |
 | Requirement-by-requirement compliance audit | `CONFORMITE_CDC.md` |
 | Step-by-step deployment guide and debugging log | `guideme2.md`, `guide.md` |
-| Validation report for the real run of 2026-08-15 | `rapport.md` / `rapport.pdf` |
+| Validation report for the real run of 2026-08-15 | `VALIDATION_REPORT.md` / `rapport.pdf` |
 | Proof screenshots (17 files) | `preuves/` |
 | Draw.io design diagrams (7 files, Figures 1, 2, 5, 6, 8, 10, 11) | `diagrams/` |
 

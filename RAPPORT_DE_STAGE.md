@@ -226,7 +226,7 @@ Les missions effectivement menées, telles que retracées par l'historique du d�
 - développement de l'application conteneurisée `task-manager` (Node.js/Express) et de sa suite de tests (Jest/Supertest) ;
 - écriture du pipeline CI (`buildspec.yml` CodeBuild, workflow GitHub Actions) intégrant SAST, tests, couverture, scan de vulnérabilités ;
 - déploiement réel de l'infrastructure sur AWS, diagnostic et correction de bogues de production, exécution d'un cycle complet du pipeline ;
-- rédaction de la documentation technique (`README.md`, `infrastructure/README.md`, `CONFORMITE_CDC.md`, `so-far.md`) et du rapport de validation final (`rapport.md`/`rapport.pdf`) ;
+- rédaction de la documentation technique (`README.md`, `infrastructure/README.md`, `CONFORMITE_CDC.md`, `so-far.md`) et du rapport de validation final (`VALIDATION_REPORT.md`/`rapport.pdf`) ;
 - démantèlement contrôlé de l'infrastructure en fin de campagne de test, avec vérification exhaustive de l'absence de coût résiduel.
 
 ---
@@ -1256,7 +1256,7 @@ Voir Introduction générale, Tableau du CDC section 7 (Sprints 1-4) et §9.6 ci
 | 03–13 juillet 2026 | Amorçage du dépôt (gouvernance GitHub), première version applicative (Flask/SQLite, CRUD de tâches), première CI GitHub Actions | Git, GitHub Actions, Flask | Application fonctionnelle mais non encore intégrée à un pipeline AWS |
 | 21–30 juillet 2026 | Écriture et validation locale des gabarits ECR, CodeBuild, VPC, IAM, Pipeline/CodeDeploy, ECS/ALB (refactor modulaire), Observabilité ; unification applicative sur Node.js/Express ; ajout de Secrets Manager et de l'auto-scaling ; durcissement des quality gates de couverture ; exploitation du scan ECR | `cfn-lint`, LocalStack Community, Jest/Supertest, Semgrep | Infrastructure des 12 stacks entièrement écrite et validée hors ligne ; `CONFORMITE_CDC.md` créé |
 | 05–14 août 2026 | Traduction anglaise des gabarits, enrichissement fonctionnel de l'application, audit complet du dépôt (3 bogues préventifs trouvés et corrigés), correction du gate SAST, alignement GitHub Actions/CodeBuild | Semgrep (WSL), GitHub Actions, cfn-lint | 61 tests / 99 % de couverture ; aucun défaut connu restant détectable sans déploiement réel |
-| 14–17 août 2026 | Déploiement réel des 12 stacks sur AWS, diagnostic et correction de 4 bogues bloquants réels, exécution complète du pipeline (Blue/Green validé), démantèlement intégral de l'infrastructure, rédaction du rapport de validation | AWS CLI, Console AWS, Docker, Trivy | Premier run end-to-end entièrement réussi ; `rapport.md`/`rapport.pdf` produits |
+| 14–17 août 2026 | Déploiement réel des 12 stacks sur AWS, diagnostic et correction de 4 bogues bloquants réels, exécution complète du pipeline (Blue/Green validé), démantèlement intégral de l'infrastructure, rédaction du rapport de validation | AWS CLI, Console AWS, Docker, Trivy | Premier run end-to-end entièrement réussi ; `VALIDATION_REPORT.md`/`rapport.pdf` produits |
 
 ## 9.9 Écarts entre prévision et réalisation
 
@@ -1273,7 +1273,7 @@ Les livrables prévus par le cahier des charges (section 8) et leur état réel 
 | `buildspec.yml` & scripts CI | ✅ Présent — `task-manager/buildspec.yml`, `.github/workflows/ci.yml` |
 | Rapport de mi-parcours | **[À COMPLÉTER]** — non retrouvé dans le dépôt |
 | Dashboard CloudWatch fonctionnel | ✅ Réalisé et déployé en réel — `observability.yml`, Figure 32 |
-| Rapport de stage final | Le présent document, complété par `rapport.md`/`rapport.pdf` (rapport de validation technique) |
+| Rapport de stage final | Le présent document, complété par `VALIDATION_REPORT.md`/`rapport.pdf` (rapport de validation technique) |
 | Slides de soutenance | **[À COMPLÉTER]** — non retrouvé dans le dépôt |
 
 ## 9.11 Compétences acquises
@@ -1497,7 +1497,7 @@ Cette page consolide, en un point d'entrée unique, l'ensemble des ressources �
 | Journal chronologique d'avancement | `so-far.md` |
 | Audit de conformité exigence par exigence | `CONFORMITE_CDC.md` |
 | Guide de déploiement pas à pas et journal de débogage | `guideme2.md`, `guide.md` |
-| Rapport de validation du run réel du 15/08/2026 (source du chapitre 6) | `rapport.md` / `rapport.pdf` |
+| Rapport de validation du run réel du 15/08/2026 (source du chapitre 6) | `VALIDATION_REPORT.md` / `rapport.pdf` |
 | Captures d'écran de preuve (17 fichiers) | `preuves/` |
 | Diagrammes de conception Draw.io (7 fichiers, Figures 1, 2, 5, 6, 8, 10, 11) | `diagrams/` |
 | Cahier des charges du stage | *CAHIER DES CHARGES & FONCTIONNEL — Pipeline CI/CD Complet avec AWS CodePipeline + ECS Fargate*, Programme de Stages Juillet/Août 2026, 28 juin 2026 |
