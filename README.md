@@ -12,8 +12,9 @@ vulnérabilités → approbation manuelle → déploiement Blue/Green sans coupu
 
 | Document | Pour quoi |
 |---|---|
-| **Ce README** | Comprendre le projet, lancer les outils locaux, les tests |
-| **[`guide.md`](guide.md)** | Déployer sur un vrai compte AWS, étape par étape |
+| **Ce README** | Comprendre le projet : architecture, application, outils |
+| **[`guide-local.md`](guide-local.md)** | Tout tester en local, sans AWS et sans coût |
+| **[`guide-aws.md`](guide-aws.md)** | Déployer et tester sur un vrai compte AWS |
 
 ---
 
@@ -40,10 +41,12 @@ streamlit run dashboard/app.py        # tableau de bord
 python -m pytest orchestrator/ optimizer/ explainer/ dashboard/   # 67 tests
 ```
 
-### Déployer sur AWS
+### Aller plus loin
 
-Voir **[`guide.md`](guide.md)** — 20 étapes, du verrouillage de la région
-jusqu'à la suppression complète pour arrêter les frais.
+- **[`guide-local.md`](guide-local.md)** — 8 vérifications en local (tests,
+  image Docker, templates, modules, garde-fous, SAST), sans AWS ni coût.
+- **[`guide-aws.md`](guide-aws.md)** — déploiement réel en 20 étapes, du
+  verrouillage de la région jusqu'à la suppression complète.
 
 ---
 
@@ -82,8 +85,8 @@ jusqu'à la suppression complète pour arrêter les frais.
   qu'en paliers exacts 10 % → 50 % → 100 % : AWS n'offre pas de configuration
   CodeDeploy ECS prédéfinie avec ces paliers, c'est l'équivalent le plus proche.
 - Une image `:latest` doit être poussée manuellement **une fois** avant le
-  premier déploiement du service ECS (bootstrap — étape 6 du guide).
-- Le test de rollback automatique (étape 18 du guide) n'a pas encore été exécuté
+  premier déploiement du service ECS (bootstrap — étape 6 de [`guide-aws.md`](guide-aws.md)).
+- Le test de rollback automatique (étape 18 de [`guide-aws.md`](guide-aws.md)) n'a pas encore été exécuté
   sur le compte réel.
 - Pas de notification distincte « rollback completed ».
 - Protection de branche GitHub à activer dans les paramètres du dépôt.
@@ -423,7 +426,8 @@ loin (LocalStack, rejeu du buildspec via l'agent CodeBuild local) :
 
 ```
 ├── README.md                    ← ce fichier
-├── guide.md                     ← déploiement AWS, étape par étape
+├── guide-local.md               ← tout tester en local, sans AWS
+├── guide-aws.md                 ← déploiement AWS, étape par étape
 ├── rapport.md / rapport.pdf     ← preuve du run end-to-end réussi
 ├── CONFORMITE_CDC.md            ← conformité au cahier des charges
 ├── preuves/                     ← 17 captures du run réel
@@ -446,11 +450,11 @@ loin (LocalStack, rejeu du buildspec via l'agent CodeBuild local) :
   pas via un ordre écrit à la main : il est dérivé des templates et ne peut pas
   dériver. `iam.yaml` importe `…-codebuild-arn`, donc CodeBuild précède IAM.
 - **Coûts** : les postes dominants sont la NAT Gateway (~0,05 $/h) et l'ALB
-  (~0,033 $/h), pas Fargate. Supprimer les stacks après chaque test (étape 19
-  du guide).
+  (~0,033 $/h), pas Fargate. Supprimer les stacks après chaque test (étape 19 de
+  [`guide-aws.md`](guide-aws.md)).
 - **Teardown** : la suppression de la stack VPC échoue tant que GuardDuty y
   laisse un VPC endpoint et un security group auto-créés — les supprimer
-  d'abord (détaillé à l'étape 19 du guide).
+  d'abord (détaillé à l'étape 19 de [`guide-aws.md`](guide-aws.md)).
 - **ECR est en `MUTABLE`** volontairement : en `IMMUTABLE`, chaque `docker push`
   échouait à cause d'une interaction connue BuildKit/ECR
   ([moby/buildkit#3776](https://github.com/moby/buildkit/issues/3776)). La

@@ -1,3 +1,28 @@
+# Guide 2 — Déployer et tester sur un vrai compte AWS
+
+Déploiement de bout en bout des 12 stacks, exécution du pipeline, vérification
+de chaque exigence du CDC, puis suppression complète pour arrêter les frais.
+
+**Avant de commencer, valider le projet en local** :
+[`guide-local.md`](guide-local.md) — 8 vérifications sans AWS et sans coût.
+
+> **Coûts.** Les postes dominants sont la NAT Gateway (~0,05 $/h) et l'ALB
+> (~0,033 $/h), pas Fargate. Compter ~0,10 $/h tant que la stack est debout.
+> L'étape 19 supprime tout ; ne pas la sauter.
+
+> **Ordre de déploiement.** L'ordre ci-dessous est celui dérivé des templates
+> par `python -m orchestrator graph`. En particulier, **CodeBuild (étape 7)
+> précède IAM (étape 8)** : `iam.yaml` importe l'export `…-codebuild-arn`.
+> L'inverse produit `No export named taskmanager-dev-codebuild-arn found`.
+
+> **Alternative automatisée.** Les étapes 3 à 16 peuvent être remplacées par
+> `python -m orchestrator deploy --profile <profil> --region eu-west-2`, qui
+> déploie les mêmes stacks en 7 vagues parallèles au lieu de 12 étapes
+> séquentielles. Le guide manuel ci-dessous reste la référence pour comprendre
+> ce qui se passe, et pour diagnostiquer un échec.
+
+---
+
 You are now in the right scenario: **region `eu-west-2`, SSO configured, no existing stack, 12 templates present in `infrastructure/cloudformation/`**.
 
 The requirements spec (CDC) calls for CodePipeline, CodeBuild, ECR, ECS Fargate, CodeDeploy Blue/Green, ALB, Secrets Manager, CloudWatch/SNS, ≥80% test coverage, SAST, Docker image scanning, autoscaling, and rollback.

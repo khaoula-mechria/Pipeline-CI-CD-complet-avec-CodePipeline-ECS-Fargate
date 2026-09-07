@@ -377,7 +377,7 @@ envisagées) est résolu : `buildspec.yml` ne pousse plus `latest` sur les build
 été détectée et corrigée avant d'être commise dans ce rapport : `ecs-task-definition.yaml` dépend de
 `<repo>:latest` pour son image de bootstrap (avant que le pipeline n'ait jamais tourné) — un premier correctif
 avait supprimé `latest` de partout, cassant ce chemin. Solution retenue : le pousser une seule fois, à la
-main, dans le guide de déploiement (`guide.md`), le seul moment où c'est sans risque.
+main, dans le guide de déploiement (`guide-aws.md`), le seul moment où c'est sans risque.
 
 Vérifications effectuées après chaque correction : `cfn-lint` propre sur les 12 templates, graphe complet des
 exports/imports entre stacks recalculé sans référence pendante, `npm test` (61 tests, ~99 %), et Semgrep
