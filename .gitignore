@@ -38,3 +38,9 @@ imageDetail.json
 # Modules develop : etat runtime de l orchestrateur
 .orchestrator-state.json
 __pycache__/
+
+# Config locale Claude Code (specifique au poste)
+.claude/settings.local.json
+
+# Cache devbox
+.devbox/
